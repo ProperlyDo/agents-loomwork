@@ -1,0 +1,7 @@
+.DS_Store
+.idea/
+__pycache__/
+
+# sessions opened in this repo may drop agent-local dirs — never committable here
+.agents/
+.claude/
