@@ -14,6 +14,7 @@ Translation is the last step of an implementation — run this only when explici
    - Angular: `docker compose run --rm app pnpm run i18n`
 2. Fill the pending entries:
    - Django (`.po`, under the project's `locale/` directory): fill empty `msgstr`s and resolve `#, fuzzy` entries — fix the translation, drop the fuzzy marker.
+     A fuzzy `msgstr` is gettext's guess copied from a similar old entry, so it is often unrelated — translate the `msgid` from scratch and overwrite it, never polish the guess. The `#| msgid` comment names the text it came from; drop it with the marker.
    - Angular (`.xlf`, under `src/locale/`): find `state="new"` entries, replace the English text in `<target>` with the translation, change `state="new"` to `state="translated"`.
 
 ## Rules
