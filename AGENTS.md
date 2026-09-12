@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Shared agent rules for Python/Django backend and Angular frontend projects.
+Shared rules for AI agents across our projects.
 
 ## Scope and precedence
 
@@ -13,7 +13,6 @@ Shared agent rules for Python/Django backend and Angular frontend projects.
 
 ## Working style
 
-- All project commands run inside Docker containers — `docker compose run --rm <service> <command>`; the README names the services.
 - Before implementing new methods, classes, or features:
   1. Search the codebase for existing similar functionality
   2. Extend existing code if it nearly fits the need
@@ -21,7 +20,7 @@ Shared agent rules for Python/Django backend and Angular frontend projects.
 - Cross-cutting behavior (limits, ledgers, auditing) extends the app's established mechanism — a missing scope/flag on it, never a parallel sibling mechanism, even if simpler.
 - After implementing, verify with a quick cheap check (shell/curl for a backend, hot reload in the browser for a frontend) and hand the user a short "what to check" list instead of probing the running system end-to-end yourself; reserve deep verification for risky or hard-to-predict changes.
 - Tests must not make real API calls to AI models or third parties — mock/stub them unless explicitly asked.
-- Infra changes come with the mechanical why stated first; a hack is either removed or its intent made explicit — the user picks, never silently adjust to a broken setup. Dev services stay minimal and opt-in: new services enter behind a compose profile, never autostart, with entrypoint/command split so `run` can take custom args.
+- Infra changes come with the mechanical why stated first; a hack is either removed or its intent made explicit — the user picks, never silently adjust to a broken setup.
 
 ## Naming (all languages)
 

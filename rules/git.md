@@ -1,3 +1,4 @@
+<!-- deliberately no paths: frontmatter — that is what makes this rule global -->
 # Git
 
 - **Never** run mutating git commands (commit, push, merge, mv, restore, checkout, reset, rebase, stash, …) unless explicitly asked; read-only (status, log, diff, show, blame) is always fine

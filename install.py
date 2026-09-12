@@ -32,17 +32,15 @@ def origin_owner() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="install.py")
     commands = parser.add_subparsers(dest="command", required=True)
+
     for name in ("install", "sync", "link", "uninstall"):
         command = commands.add_parser(name)
         command.add_argument("--namespace", type=namespace_word)
-        command.add_argument("--config-dir", default="~/.agents")
         if name != "install":
             command.add_argument("project", nargs="?", default=None)
+
     args = parser.parse_args()
-    installation = Installation(
-        config_dir=Path(args.config_dir).expanduser().resolve(),
-        namespace=args.namespace or origin_owner(),
-    )
+    installation = Installation(namespace=args.namespace or origin_owner())
     if args.command == "install":
         installation.install(AGENTS)
     elif args.command == "sync":

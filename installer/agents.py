@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import ClassVar
@@ -11,7 +12,12 @@ from installer.installation import Installation, rmdir_quiet
 
 
 class Agent(ABC):
-    """A supported tool: its config-dir contract, presence detection, bridges, and optional lifecycle registration."""
+    """A supported tool, integrated by overriding exactly the surfaces it can consume — the no-op defaults cover the rest.
+
+    The shape of a subclass mirrors how the tool loads rules: a tool that reads and follows instructions
+    needs only a global link (OpenCode); a tool with a mechanical loader selects by which files exist,
+    so its class must also translate the project's declaration into filesystem state (ClaudeCode, JetBrains).
+    """
 
     # each agent names the env var it honors — never invent one the tool itself doesn't read
     CONFIG_DIR_ENV: ClassVar[str]
@@ -59,6 +65,8 @@ class Agent(ABC):
 
 
 class ClaudeCode(Agent):
+    """Mechanical loader and the host: its engine loads whatever files exist, so projects get wired — and its SessionStart hook is what runs sync for every agent."""
+
     CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
     DEFAULT_CONFIG_DIR = "~/.claude"
     HOOK_TIMEOUT_SECONDS: ClassVar[int] = 10
@@ -120,10 +128,10 @@ class ClaudeCode(Agent):
             rules_link.unlink()
 
     def hook_command(self, installation: Installation) -> str:
-        """The SessionStart hook line — the only persisted home of namespace and config dir; the shell fills in the session's project."""
+        """The SessionStart hook line — the only persisted home of the namespace; the shell fills in the session's project."""
         return (
             f"{shlex.quote(f'{installation.repo_dir}/install.py')} sync"
-            f" --namespace {installation.namespace} --config-dir {shlex.quote(str(installation.config_dir))}"
+            f" --namespace {installation.namespace}"
             ' "$CLAUDE_PROJECT_DIR"'
         )
 
@@ -175,6 +183,8 @@ class ClaudeCode(Agent):
 
 
 class OpenCode(Agent):
+    """Instruction follower: reads the global AGENTS.md and routes itself to the rule files at runtime — one link is the whole integration."""
+
     CONFIG_DIR_ENV = "OPENCODE_CONFIG_DIR"
     DEFAULT_CONFIG_DIR = "~/.config/opencode"
 
@@ -192,4 +202,41 @@ class OpenCode(Agent):
         return Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "opencode"
 
 
-AGENTS: tuple[Agent, ...] = (ClaudeCode(), OpenCode())
+class JetBrains(Agent):
+    """Mechanical loader without a global channel: AI Assistant (PyCharm, WebStorm, …) reads rules per project only, so its project links must also carry the universal layer."""
+
+    def bridge(self, installation: Installation) -> None:
+        """Nothing to lay — AI Assistant has no file-based user-level rules."""
+        return None
+
+    def unbridge(self, installation: Installation) -> None:
+        """Mirror of bridge() — nothing was laid."""
+        return None
+
+    def bridge_project(self, installation: Installation, project_dir: Path) -> None:
+        """Flat links in .aiassistant/rules — with no global channel, the project set carries everything: universal layer, stack-neutral rules, declared stacks."""
+        stacks = installation.declared_stacks(project_dir)
+        our_rules = [installation.agents_file]
+        for rule_file in sorted(installation.rules_dir.glob("*.md")):
+            if installation.is_stack_neutral(rule_file) or rule_file.stem in stacks:
+                our_rules.append(rule_file)
+        installation.reconcile(our_rules, self.assistant_rules_dir(project_dir))
+
+    def unbridge_project(self, installation: Installation, project_dir: Path) -> None:
+        """Drop our rule links and the dirs when they empty out."""
+        installation.prune(self.assistant_rules_dir(project_dir), set())
+        rmdir_quiet(self.assistant_rules_dir(project_dir))
+        rmdir_quiet(project_dir / ".aiassistant")
+
+    def assistant_rules_dir(self, project_dir: Path) -> Path:
+        return project_dir / ".aiassistant" / "rules"
+
+    @property
+    def config_dir(self) -> Path:
+        # JetBrains reads no config-dir env var — the IDE support dir is just the presence marker
+        if sys.platform == "darwin":
+            return Path("~/Library/Application Support/JetBrains").expanduser()
+        return Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "JetBrains"
+
+
+AGENTS: tuple[Agent, ...] = (ClaudeCode(), OpenCode(), JetBrains())

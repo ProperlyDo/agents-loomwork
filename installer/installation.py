@@ -29,8 +29,11 @@ def rmdir_quiet(directory: Path) -> None:
 
 @dataclass(frozen=True)
 class Installation:
-    config_dir: Path
+    """The agent-agnostic substrate — agents dir, project containers, link primitives. Agents only bridge into it, never build it."""
+
     namespace: str
+    # fixed at the .agents standard location — tools like OpenCode find it only there
+    agents_dir: Path = Path("~/.agents").expanduser().resolve()
 
     # a path component that also sits unquoted in the shell hook line — keep it boring
     NAMESPACE_RE: ClassVar[re.Pattern] = re.compile(r"[\w.-]+", re.ASCII)
@@ -48,7 +51,7 @@ class Installation:
             agent.register(self)
         self.pull()
         self.converge(agents)
-        say(f"installed as '{self.namespace}' into {self.config_dir}")
+        say(f"installed as '{self.namespace}' into {self.agents_dir}")
         if bridged:
             say(f"bridged {', '.join(type(agent).__name__ for agent in bridged)}")
         else:
@@ -61,7 +64,7 @@ class Installation:
         self.link(project, agents)
 
     def link(self, project: str | None, agents: tuple[Agent, ...]) -> Path:
-        """Converge config dir and bridges, then wire the given project — the session's cwd by default."""
+        """Converge agents dir and bridges, then wire the given project — the session's cwd by default."""
         self.converge(agents)
         # the hook passes the session's project as the argument — wiring follows wherever sessions happen
         project_dir = Path(project).resolve() if project else Path.cwd()
@@ -69,36 +72,36 @@ class Installation:
         return project_dir
 
     def converge(self, agents: tuple[Agent, ...]) -> None:
-        """Populate the config dir and lay every present agent's bridges."""
-        self.populate_config_dir()
+        """Populate the agents dir and lay every present agent's bridges."""
+        self.populate_agents_dir()
         for agent in agents:
             if agent.present():
                 agent.bridge(self)
 
     def uninstall(self, project: str | None, agents: tuple[Agent, ...]) -> None:
-        """Tear down hook, bridges and the config-dir content we own — or unwire one given project."""
+        """Tear down hook, bridges and the agents-dir content we own — or unwire one given project."""
         if project:
             self.unwire_project(Path(project).resolve(), agents)
             return
-        # bridges first, then the config dir they point into
+        # bridges first, then the agents dir they point into
         for agent in agents:
             agent.unregister(self)
             agent.unbridge(self)
         self.prune(self.rules_dir, set())
         rmdir_quiet(self.rules_dir)
-        rmdir_quiet(self.config_dir / "rules")
+        rmdir_quiet(self.agents_dir / "rules")
         if self.owned(self.agents_file):
             self.agents_file.unlink()
         # our skills only — the skills CLI's entries stay
         self.prune(self.skills_dir, set())
         rmdir_quiet(self.skills_dir)
-        rmdir_quiet(self.config_dir)
-        say(f"uninstalled from {self.config_dir} and every bridged agent — the clone at {self.repo_dir} remains")
+        rmdir_quiet(self.agents_dir)
+        say(f"uninstalled from {self.agents_dir} and every bridged agent — the clone at {self.repo_dir} remains")
 
-    def populate_config_dir(self) -> None:
-        """Land AGENTS.md, every rule and our skills in the config dir — the one place agent dirs bridge into."""
+    def populate_agents_dir(self) -> None:
+        """Land AGENTS.md, every rule and our skills in the agents dir — the one place agent dirs bridge into."""
         self.reconcile(self.shipped_rule_files(), self.rules_dir)
-        # our skills only — everything else in the config dir's skills belongs to the skills CLI
+        # our skills only — everything else in the agents dir's skills belongs to the skills CLI
         self.reconcile(self.shipped_skill_dirs(), self.skills_dir)
         self.symlink(self.repo_dir / "AGENTS.md", self.agents_file)
 
@@ -206,14 +209,14 @@ class Installation:
                 entry.unlink(missing_ok=True)
 
     def owned(self, path: Path) -> bool:
-        """A symlink is ours when it targets the repo, our config dir, or one of our project-relative shapes."""
+        """A symlink is ours when it targets the repo, our agents dir, or one of our project-relative shapes."""
         if not path.is_symlink():
             return False
         target = os.readlink(path)
         if target in (self.PROJECT_MD_TARGET, self.PROJECT_RULES_TARGET):
             return True
         # absolute-only matching is load-bearing: the skills CLI links the same destinations relatively
-        return target.startswith((f"{self.repo_dir}/", f"{self.config_dir}/"))
+        return target.startswith((f"{self.repo_dir}/", f"{self.agents_dir}/"))
 
     def is_stack_neutral(self, rule_file: Path) -> bool:
         """No paths: frontmatter means the rule loads everywhere — exactly those bridge globally."""
@@ -234,13 +237,13 @@ class Installation:
 
     @property
     def rules_dir(self) -> Path:
-        return self.config_dir / "rules" / self.namespace
+        return self.agents_dir / "rules" / self.namespace
 
     @property
     def skills_dir(self) -> Path:
-        return self.config_dir / "skills"
+        return self.agents_dir / "skills"
 
     @property
     def agents_file(self) -> Path:
-        return self.config_dir / "AGENTS.md"
+        return self.agents_dir / "AGENTS.md"
 
