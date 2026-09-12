@@ -34,6 +34,7 @@ class Installation:
     namespace: str
     # fixed at the .agents standard location — tools like OpenCode find it only there
     agents_dir: Path = Path("~/.agents").expanduser().resolve()
+    repo_dir: Path = Path(__file__).resolve().parent.parent
 
     # a path component that also sits unquoted in the shell hook line — keep it boring
     NAMESPACE_RE: ClassVar[re.Pattern] = re.compile(r"[\w.-]+", re.ASCII)
@@ -42,6 +43,8 @@ class Installation:
     PROJECT_MD_TARGET: ClassVar[str] = "../../../AGENTS.md"
     # the wholesale rules-link shape agents lay beside their project config — namespace-free, so configs share it
     PROJECT_RULES_TARGET: ClassVar[str] = "../.agents/rules"
+    # two hops up from .aiassistant/rules/ is that same project root
+    ASSISTANT_MD_TARGET: ClassVar[str] = "../../AGENTS.md"
     PULL_TIMEOUT_SECONDS: ClassVar[int] = 8
 
     def install(self, agents: tuple[Agent, ...]) -> None:
@@ -49,7 +52,8 @@ class Installation:
         bridged = [agent for agent in agents if agent.present()]
         for agent in bridged:
             agent.register(self)
-        self.pull()
+        if not self.pull():
+            warn("could not pull — installing the clone as it stands")
         self.converge(agents)
         say(f"installed as '{self.namespace}' into {self.agents_dir}")
         if bridged:
@@ -92,17 +96,12 @@ class Installation:
         rmdir_quiet(self.agents_dir / "rules")
         if self.owned(self.agents_file):
             self.agents_file.unlink()
-        # our skills only — the skills CLI's entries stay
-        self.prune(self.skills_dir, set())
-        rmdir_quiet(self.skills_dir)
         rmdir_quiet(self.agents_dir)
         say(f"uninstalled from {self.agents_dir} and every bridged agent — the clone at {self.repo_dir} remains")
 
     def populate_agents_dir(self) -> None:
-        """Land AGENTS.md, every rule and our skills in the agents dir — the one place agent dirs bridge into."""
-        self.reconcile(self.shipped_rule_files(), self.rules_dir)
-        # our skills only — everything else in the agents dir's skills belongs to the skills CLI
-        self.reconcile(self.shipped_skill_dirs(), self.skills_dir)
+        """Land AGENTS.md and every rule in the agents dir — the one place agent dirs bridge into."""
+        self.reconcile(self.by_name(self.shipped_rule_files()), self.rules_dir)
         self.symlink(self.repo_dir / "AGENTS.md", self.agents_file)
 
     def wire_project(self, project_dir: Path, agents: tuple[Agent, ...]) -> None:
@@ -110,6 +109,9 @@ class Installation:
         container = project_dir / ".agents" / "rules" / self.namespace
         stacks = self.declared_stacks(project_dir)
         if not stacks:
+            # dropping the declaration is the opt-out; frontmatter that parsed to nothing is a typo, not a decision
+            if self.frontmatter(self.declaration_file(project_dir)):
+                warn(f"no 'stacks: [...]' line in {self.declaration_file(project_dir)} — unwiring")
             # a removed declaration is the opt-out — everything we placed goes with it
             self.unwire_project(project_dir, agents)
             return
@@ -147,17 +149,19 @@ class Installation:
 
     def declared_stacks(self, project_dir: Path) -> list[str]:
         """The project's stacks: declaration — the opt-in; inline `stacks: [python, django]` form only."""
-        project_agents_file = project_dir / "AGENTS.md"
-        if not project_agents_file.is_file():
-            return []
-        for line in self.frontmatter(project_agents_file):
+        for line in self.frontmatter(self.declaration_file(project_dir)):
             declaration = self.STACKS_RE.match(line)
             if declaration:
                 return [stack.strip() for stack in declaration.group(1).split(",") if stack.strip()]
         return []
 
+    def declaration_file(self, project_dir: Path) -> Path:
+        return project_dir / "AGENTS.md"
+
     def frontmatter(self, markdown_file: Path) -> list[str]:
         """The lines between the leading --- fences — body text never reads as configuration."""
+        if not markdown_file.is_file():
+            return []
         lines = markdown_file.read_text().splitlines()
         if not lines or lines[0].strip() != "---":
             return []
@@ -166,10 +170,11 @@ class Installation:
                 return lines[1:position]
         return []
 
-    def pull(self) -> None:
+    def pull(self) -> bool:
+        """Fast-forward the clone, reporting whether it worked — the session hook stays silent, install speaks up."""
         # macOS ships no timeout(1); subprocess provides the bound the hook otherwise had to enforce
         try:
-            subprocess.run(
+            pulled = subprocess.run(
                 ["git", "-C", str(self.repo_dir), "pull", "--ff-only", "--quiet"],
                 timeout=self.PULL_TIMEOUT_SECONDS,
                 stdout=subprocess.DEVNULL,
@@ -177,16 +182,19 @@ class Installation:
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            pass
+            return False
+        return pulled.returncode == 0
 
-    def reconcile(self, sources: list[Path], into_dir: Path) -> None:
-        """Link every source into the dir by its name, pruning our links that no longer belong."""
+    def reconcile(self, links: dict[str, Path | str], into_dir: Path) -> None:
+        """Link every target into the dir under its given name, pruning our links that no longer belong."""
         into_dir.mkdir(parents=True, exist_ok=True)
-        source_names = set()
-        for source in sources:
-            source_names.add(source.name)
-            self.symlink(source, into_dir / source.name)
-        self.prune(into_dir, source_names)
+        for name, target in links.items():
+            self.symlink(target, into_dir / name)
+        self.prune(into_dir, set(links))
+
+    def by_name(self, sources: list[Path]) -> dict[str, Path]:
+        """Sources keyed by the name they keep in the destination dir."""
+        return {source.name: source for source in sources}
 
     def symlink(self, target: Path | str, link_path: Path) -> None:  # argument order mirrors ln -s
         """Create the link unless the name is taken by something we don't own — then warn and step aside."""
@@ -209,14 +217,13 @@ class Installation:
                 entry.unlink(missing_ok=True)
 
     def owned(self, path: Path) -> bool:
-        """A symlink is ours when it targets the repo, our agents dir, or one of our project-relative shapes."""
+        """A symlink is ours when it lands in this clone, or wears one of our project-relative shapes."""
         if not path.is_symlink():
             return False
-        target = os.readlink(path)
-        if target in (self.PROJECT_MD_TARGET, self.PROJECT_RULES_TARGET):
+        if os.readlink(path) in (self.PROJECT_MD_TARGET, self.PROJECT_RULES_TARGET, self.ASSISTANT_MD_TARGET):
             return True
-        # absolute-only matching is load-bearing: the skills CLI links the same destinations relatively
-        return target.startswith((f"{self.repo_dir}/", f"{self.agents_dir}/"))
+        # following the agents-dir hop to its end keeps a second installation's links foreign — ours all land in our clone
+        return path.resolve().is_relative_to(self.repo_dir)
 
     def is_stack_neutral(self, rule_file: Path) -> bool:
         """No paths: frontmatter means the rule loads everywhere — exactly those bridge globally."""
@@ -225,23 +232,9 @@ class Installation:
     def shipped_rule_files(self) -> list[Path]:
         return sorted((self.repo_dir / "rules").glob("*.md"))
 
-    def shipped_skill_dirs(self) -> list[Path]:
-        skills_root = self.repo_dir / "skills"
-        if not skills_root.is_dir():
-            return []
-        return sorted(entry for entry in skills_root.iterdir() if entry.is_dir())
-
-    @property
-    def repo_dir(self) -> Path:
-        return Path(__file__).resolve().parent.parent
-
     @property
     def rules_dir(self) -> Path:
         return self.agents_dir / "rules" / self.namespace
-
-    @property
-    def skills_dir(self) -> Path:
-        return self.agents_dir / "skills"
 
     @property
     def agents_file(self) -> Path:

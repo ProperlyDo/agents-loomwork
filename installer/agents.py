@@ -19,13 +19,14 @@ class Agent(ABC):
     so its class must also translate the project's declaration into filesystem state (ClaudeCode, JetBrains).
     """
 
-    # each agent names the env var it honors — never invent one the tool itself doesn't read
-    CONFIG_DIR_ENV: ClassVar[str]
-    DEFAULT_CONFIG_DIR: ClassVar[str]
-
     def present(self) -> bool:
         """An agent that never ran gets nothing — config dirs are never fabricated for absent tools."""
         return self.config_dir.is_dir()
+
+    @property
+    @abstractmethod
+    def config_dir(self) -> Path:
+        """Where the tool keeps its own configuration — our presence marker, and for most the bridge target."""
 
     @abstractmethod
     def bridge(self, installation: Installation) -> None:
@@ -51,9 +52,16 @@ class Agent(ABC):
         """Mirror of bridge_project() — remove per-project pointers when the container is gone."""
         return None
 
+
+class EnvConfiguredAgent(Agent):
+    """A tool that reads its config dir from an env var — point the tool elsewhere and our links follow it."""
+
+    # each agent names the env var it honors — never invent one the tool itself doesn't read
+    CONFIG_DIR_ENV: ClassVar[str]
+    DEFAULT_CONFIG_DIR: ClassVar[str]
+
     @property
     def config_dir(self) -> Path:
-        """The tool's own config dir — its honored env var when set, else its default."""
         configured = os.environ.get(self.CONFIG_DIR_ENV)
         if configured:
             return Path(configured).expanduser()
@@ -64,7 +72,7 @@ class Agent(ABC):
         return Path(self.DEFAULT_CONFIG_DIR).expanduser()
 
 
-class ClaudeCode(Agent):
+class ClaudeCode(EnvConfiguredAgent):
     """Mechanical loader and the host: its engine loads whatever files exist, so projects get wired — and its SessionStart hook is what runs sync for every agent."""
 
     CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
@@ -72,10 +80,9 @@ class ClaudeCode(Agent):
     HOOK_TIMEOUT_SECONDS: ClassVar[int] = 10
 
     def bridge(self, installation: Installation) -> None:
-        """Claude's three bridge surfaces — CLAUDE.md, rules, skills — laid in one pass."""
+        """Claude's two bridge surfaces — CLAUDE.md and rules — laid in one pass; skills are the skills CLI's."""
         self.bridge_claude_md(installation)
         self.bridge_rules(installation)
-        self.bridge_skills(installation)
 
     def bridge_claude_md(self, installation: Installation) -> None:
         """Claude's user-level CLAUDE.md becomes our AGENTS.md — the universal layer in every session."""
@@ -88,27 +95,21 @@ class ClaudeCode(Agent):
         if installation.owned(bridge_dir):
             bridge_dir.unlink()
         neutral_rules = [rule for rule in sorted(installation.rules_dir.glob("*.md")) if installation.is_stack_neutral(rule)]
-        installation.reconcile(neutral_rules, bridge_dir)
+        installation.reconcile(installation.by_name(neutral_rules), bridge_dir)
         installation.prune(self.config_dir / "rules", {installation.namespace})
 
-    def bridge_skills(self, installation: Installation) -> None:
-        """Per-skill links, so ours sit beside skills-CLI installs without owning the directory."""
-        our_skills = [installation.skills_dir / skill_dir.name for skill_dir in installation.shipped_skill_dirs()]
-        installation.reconcile(our_skills, self.config_dir / "skills")
-
     def unbridge(self, installation: Installation) -> None:
-        """Remove all three bridge surfaces."""
+        """Remove both bridge surfaces."""
         bridge_dir = self.rules_bridge_dir(installation)
         installation.prune(bridge_dir, set())
         rmdir_quiet(bridge_dir)
         installation.prune(self.config_dir / "rules", set())
-        installation.prune(self.config_dir / "skills", set())
         claude_file = self.config_dir / "CLAUDE.md"
         if installation.owned(claude_file):
             claude_file.unlink()
 
     def bridge_project(self, installation: Installation, project_dir: Path) -> None:
-        """Link .claude/rules at the project's .agents/rules wholesale, plus the skills link when it is missing."""
+        """Link .claude/rules at the project's .agents/rules wholesale."""
         rules_link = project_dir / ".claude" / "rules"
         # a leftover real rules dir blocks the wholesale link — clear it when it holds nothing foreign
         if rules_link.is_dir() and not rules_link.is_symlink():
@@ -116,10 +117,6 @@ class ClaudeCode(Agent):
             rmdir_quiet(rules_link)
         (project_dir / ".claude").mkdir(exist_ok=True)
         installation.symlink(installation.PROJECT_RULES_TARGET, rules_link)
-        # the skills link is the skills CLI's, but re-laying it after a wiped .claude is trivially derivable — create-only, never managed
-        skills_link = project_dir / ".claude" / "skills"
-        if (project_dir / ".agents" / "skills").is_dir() and not skills_link.exists() and not skills_link.is_symlink():
-            skills_link.symlink_to("../.agents/skills")
 
     def unbridge_project(self, installation: Installation, project_dir: Path) -> None:
         """Drop the wholesale rules link, but only when no config's container remains behind it."""
@@ -182,7 +179,7 @@ class ClaudeCode(Agent):
         return self.config_dir / "settings.json"
 
 
-class OpenCode(Agent):
+class OpenCode(EnvConfiguredAgent):
     """Instruction follower: reads the global AGENTS.md and routes itself to the rule files at runtime — one link is the whole integration."""
 
     CONFIG_DIR_ENV = "OPENCODE_CONFIG_DIR"
@@ -214,13 +211,15 @@ class JetBrains(Agent):
         return None
 
     def bridge_project(self, installation: Installation, project_dir: Path) -> None:
-        """Flat links in .aiassistant/rules — with no global channel, the project set carries everything: universal layer, stack-neutral rules, declared stacks."""
+        """Flat links in .aiassistant/rules — with no global channel, the project set carries everything: universal layer, stack-neutral rules, declared stacks, the project's own file."""
         stacks = installation.declared_stacks(project_dir)
         our_rules = [installation.agents_file]
         for rule_file in sorted(installation.rules_dir.glob("*.md")):
             if installation.is_stack_neutral(rule_file) or rule_file.stem in stacks:
                 our_rules.append(rule_file)
-        installation.reconcile(our_rules, self.assistant_rules_dir(project_dir))
+        # project.md, because the universal layer already holds the AGENTS.md name here
+        links = installation.by_name(our_rules) | {"project.md": installation.ASSISTANT_MD_TARGET}
+        installation.reconcile(links, self.assistant_rules_dir(project_dir))
 
     def unbridge_project(self, installation: Installation, project_dir: Path) -> None:
         """Drop our rule links and the dirs when they empty out."""
