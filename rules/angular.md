@@ -1,14 +1,3 @@
----
-# superset of typescript.md's paths — angular work always applies the typescript rules too
-paths:
-  - "**/*.ts"
-  - "**/*.tsx"
-  - "**/*.html"
-  - "**/*.scss"
-  - "**/*.xlf"
-  - "**/angular.json"
----
-
 # Angular
 
 Follow Angular community best practices; `rules/typescript.md` applies throughout.

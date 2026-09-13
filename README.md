@@ -72,7 +72,7 @@ Uninstall with `./install.py uninstall`. It removes the hook, the bridges, and e
 | In the repo | Purpose |
 |---|---|
 | `AGENTS.md` | the universal layer: rule routing, working style, naming, code comments. Loads in every session |
-| `rules/<stack>.md` | one rule file per stack. Its `paths:` globs load it lazily; a file without `paths:` is stack-neutral and loads everywhere (`git.md`). A stack pair always loads together — see Adding rules and skills |
+| `rules/<stack>.md` | one rule file per stack, linked into the projects that declare it and loaded there in full. `reach: global` in the frontmatter makes a rule stack-neutral instead: linked everywhere, declared or not (`git.md`) |
 | `skills/<name>/` | task procedures (Agent Skills spec) — a standalone catalog. Rules state constraints; skills own workflows. Each one is installed on demand by the skills CLI, which treats this repo like any other source |
 | `install.py` + `installer/` | the whole lifecycle: `install` / `sync` / `link` / `uninstall`. `installation.py` is the linking machinery; `agents.py` holds one class per agent — each overrides only the surfaces its tool can consume — and the `AGENTS` roster |
 | `tests/` | `python3 -m unittest discover` — no dependencies, so it runs wherever `install.py` does. Ownership, reconcile/prune and the wiring round trip: the parts that delete files |
@@ -117,11 +117,11 @@ The namespace persists only in the registered hook line; every subcommand takes 
    - **JetBrains** — flat links in `.aiassistant/rules/` instead; with no global channel, that set carries the universal layer and the stack-neutral rules too
    - **warnings on stderr** for an unknown stack name, and for frontmatter whose `stacks:` line failed to parse — that unwires the project, and a typo should not do so quietly
 
-Every pass reconciles: a link of ours whose name is no longer wanted gets removed, so upstream renames leave no zombies; anything we don't own is never touched. Stack rules never bridge globally — `.html` means Django templates in one repo and Angular templates in another, and only the project knows which.
+Every pass reconciles: a link of ours whose name is no longer wanted gets removed, so upstream renames leave no zombies; anything we don't own is never touched. Stack rules never bridge globally — the declaration is what admits them, so Django conventions never reach the Angular repo.
 
 ### When rules actually load
 
-Claude loads the unconditional files at launch and a stack pair on the first matching read. OpenCode and friends follow the routing in `AGENTS.md` instead: `rules/git.md` plus each declared stack's file, read from the clone — which is why they need no project links at all.
+Claude loads every linked rule at launch, so the whole declared set is in context before the first tool call. Nothing is gated on reading a matching file: a session that works through the shell, or writes a file it never read, would fire no such trigger. OpenCode and friends follow the routing in `AGENTS.md` instead: `rules/git.md` plus each declared stack's file, read from the clone — which is why they need no project links at all.
 
 ### Without Claude Code on the machine
 
@@ -133,17 +133,16 @@ The session hook never fires, so two things become manual:
 ## Adding rules and skills
 
 - Prove a convention in one project's `AGENTS.md` first, then promote it here. An always-on constraint becomes a rule; a task-shaped procedure becomes a skill.
-- A rule's frontmatter decides its reach — there is no list to maintain. With `paths:` globs it is a **stack rule**: linked only into projects that declare that stack, loaded when a matching file is read. Without `paths:` it is **stack-neutral**: bridged globally and active in every project, declared or not (`git.md`). So the question to ask before omitting globs is: is this rule true in *every* repo on the machine, including ones that never opted in? Only then leave them off.
+- A rule's frontmatter decides its reach — there is no list to maintain. Bare, it is a **stack rule**: linked only into the projects that declare that stack. With `reach: global` it is **stack-neutral**: bridged globally and active in every project, declared or not (`git.md`). So the question to ask before adding the marker is: is this rule true in *every* repo on the machine, including ones that never opted in? Only then mark it.
 - Skills ship through the skills CLI, ours included — this repo is just another source: `npx skills add -g ProperlyDo/agents-config --skill <name>` for every project, or without `-g` inside one project, which pins it in that project's `skills-lock.json`. The installer never touches `~/.agents/skills/`, so a skill edited here reaches machines on `npx skills update`, not on the next session.
 - Editing a skill often? On your own machine, swap the installed copy for a link at the clone — `npx skills remove -g <name>`, then `ln -s <clone>/skills/<name> ~/.agents/skills/<name>`. Edits go live, the CLI leaves entries it doesn't track alone, and everyone else still gets the pinned copy. It is a local override, not a setup step: nothing in this repo creates it.
 - State a convention in one place only. When both `AGENTS.md` and a rule file carry it, which copy wins is anyone's guess.
-- Rules cannot import each other. A pair stays bundled because the dependent file's `paths:` cover all of the base file's — so a glob added to a base file goes into its dependent too. The frontmatter comments mark this.
-- Quote globs that start with `*` or `{` — unquoted, YAML eats them silently.
+- Rules cannot import each other. A pair stays bundled by the declaration alone — `stacks: [python, django]` links both files, and each one names the other as applying throughout.
+- A rule is always in context wherever it is linked, so its cost is paid every session in that project. Keep a stack file to what is true across that stack; anything narrower belongs in the project's own `AGENTS.md`.
 
 ## Verifying
 
-- **Watch for `Loaded …/rules/<stack>.md` lines** — the main signal. They appear under Claude's first Read of a matching file, so prompt some work on the code and look for them. No line means the globs didn't match. `/memory` won't show stack rules at all — it lists only what loaded at launch (universal layer, global rules, the project `AGENTS.md`); `/context` shows skills.
-- **Brand-new files don't trigger rules.** Rules inject when Claude *reads* a matching file, not when it creates one. For greenfield work the routing instruction in `AGENTS.md` is what brings the stack rules in.
-- **The very first session in a fresh project clone starts without `project.md`.** Claude scans rule folders at launch, and the hook that creates the links runs just after — one step too late for that single session. Stack rules are unaffected (they load later, at read time), and every following session is complete. To make even the first session complete, wire the project by hand right after cloning: `install.py link <project-dir>`.
+- **`/memory` is the signal** — it lists what loaded at launch, which is the whole set: universal layer, global rules, the project's `AGENTS.md`, and every declared stack. A stack missing there means the project isn't wired, not that a trigger failed to fire; `/context` shows skills.
+- **The very first session in a fresh project clone starts without its rules.** Claude scans rule folders at launch, and the hook that creates the links runs just after — one step too late for that single session. `sync` says so whenever it lays links that weren't there (*rules newly linked — restart the session to load them*); a restart is the whole fix, and every later session is complete. To skip it entirely, wire the project by hand right after cloning: `install.py link <project-dir>`.
 - **A deleted project `.claude/` is nearly self-healing.** The next session relays `rules`, and `git restore` brings back the committed `settings.json`. The `skills` link is the project's own hook, which only lays it when `.agents/skills` is missing — so recreate it by hand: `ln -s ../.agents/skills .claude/skills`.
 - **In PyCharm, our rules appear under `.aiassistant/rules`.** Open a rule file there — seeing our text means the IDE follows the links (a broken link is worth reporting). Then ask the AI chat *"what do the project rules say about git branch naming?"* — an answer naming `<type>/<short-kebab-desc>` proves the rules reach it. Rule type (Always / by patterns) is IDE-side metadata: check it under Settings → Tools → AI Assistant → Project Rules and set Always if needed. `.aiassistant/` stays gitignored — the links are machine-local.

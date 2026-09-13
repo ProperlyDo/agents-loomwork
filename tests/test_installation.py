@@ -5,15 +5,15 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from installer.agents import ClaudeCode, JetBrains, OpenCode
 from installer.installation import Installation
 
-STACK_RULE = "---\npaths:\n  - \"**/*.py\"\n---\n\n# Python\n"
-NEUTRAL_RULE = "# Git\n"
+STACK_RULE = "# Python\n"
+NEUTRAL_RULE = "---\nreach: global\n---\n\n# Git\n"
 
 
 def make_clone(root: Path, name: str = "agents-config") -> Path:
@@ -46,10 +46,20 @@ class InstallationTestCase(unittest.TestCase):
             agents_dir=self.root / "home" / ".agents",
             repo_dir=self.clone,
         )
+        # wiring announces new links — only the tests that assert on it want that on the terminal
+        muted_stdout = patch("sys.stdout", new_callable=io.StringIO)
+        muted_stdout.start()
+        self.addCleanup(muted_stdout.stop)
 
     def stderr_of(self, action) -> str:
         captured = io.StringIO()
         with redirect_stderr(captured):
+            action()
+        return captured.getvalue()
+
+    def stdout_of(self, action) -> str:
+        captured = io.StringIO()
+        with redirect_stdout(captured):
             action()
         return captured.getvalue()
 
@@ -152,6 +162,19 @@ class WireProjectTests(InstallationTestCase):
         warning = self.stderr_of(lambda: self.installation.wire_project(project, ()))
         self.assertIn("stacks:", warning)
 
+    def test_a_first_pass_announces_the_new_links_and_later_ones_stay_silent(self) -> None:
+        project = make_project(self.root)
+        first = self.stdout_of(lambda: self.installation.wire_project(project, ()))
+        second = self.stdout_of(lambda: self.installation.wire_project(project, ()))
+        self.assertIn("restart the session", first)
+        self.assertEqual(second, "")
+
+    def test_a_stack_added_later_announces_itself(self) -> None:
+        project = make_project(self.root)
+        self.installation.wire_project(project, ())
+        (project / "AGENTS.md").write_text("---\nstacks: [python, django]\n---\n")
+        self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
+
     def test_a_dropped_stack_leaves_no_zombie_link(self) -> None:
         project = make_project(self.root, "stacks: [python, django]")
         self.installation.wire_project(project, ())
@@ -171,7 +194,7 @@ class ClaudeCodeTests(InstallationTestCase):
         self.agent = ClaudeCode()
         self.installation.populate_agents_dir()
 
-    def test_only_stack_neutral_rules_bridge_globally(self) -> None:
+    def test_only_rules_marked_global_bridge_globally(self) -> None:
         self.agent.bridge(self.installation)
         bridged = self.config_dir / "rules" / "acme"
         self.assertEqual({entry.name for entry in bridged.iterdir()}, {"git.md"})

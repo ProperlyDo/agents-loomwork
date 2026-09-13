@@ -1,11 +1,3 @@
----
-# superset of python.md's paths — django work always applies the python rules too
-paths:
-  - "**/*.py"
-  - "**/pyproject.toml"
-  - "**/*.po"
----
-
 # Django
 
 Follow Django community best practices; `rules/python.md` applies throughout.

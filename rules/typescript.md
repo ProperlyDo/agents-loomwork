@@ -1,10 +1,3 @@
----
-# any glob added here must also go into angular.md — its paths stay a superset of these
-paths:
-  - "**/*.ts"
-  - "**/*.tsx"
----
-
 # TypeScript
 
 - Follow TypeScript best practices for clean, maintainable code

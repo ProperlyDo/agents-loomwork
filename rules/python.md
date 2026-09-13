@@ -1,10 +1,3 @@
----
-# any glob added here must also go into django.md — its paths stay a superset of these
-paths:
-  - "**/*.py"
-  - "**/pyproject.toml"
----
-
 # Python
 
 ## Dependencies

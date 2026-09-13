@@ -39,6 +39,7 @@ class Installation:
     # a path component that also sits unquoted in the shell hook line — keep it boring
     NAMESPACE_RE: ClassVar[re.Pattern] = re.compile(r"[\w.-]+", re.ASCII)
     STACKS_RE: ClassVar[re.Pattern] = re.compile(r"^stacks:\s*\[(.*)\]\s*$")
+    REACH_GLOBAL_RE: ClassVar[re.Pattern] = re.compile(r"^reach:\s*global\s*$")
     # three hops up from the container (.agents/rules/<namespace>/) is the project root; relative so the link survives project moves
     PROJECT_MD_TARGET: ClassVar[str] = "../../../AGENTS.md"
     # the wholesale rules-link shape agents lay beside their project config — namespace-free, so configs share it
@@ -116,16 +117,19 @@ class Installation:
             self.unwire_project(project_dir, agents)
             return
         container.mkdir(parents=True, exist_ok=True)
-        self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
+        newly_linked = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
         keep = {"project.md"}
         for stack in stacks:
             rule_target = self.rules_dir / f"{stack}.md"
             if rule_target.exists():
-                self.symlink(rule_target, container / f"{stack}.md")
+                newly_linked |= self.symlink(rule_target, container / f"{stack}.md")
                 keep.add(f"{stack}.md")
             else:
                 warn(f"unknown stack '{stack}' in {project_dir}/AGENTS.md")
         self.prune(container, keep)
+        if newly_linked:
+            # the hosting session read its rules before this hook laid them — only a restart picks them up
+            say("rules newly linked — restart the session to load them")
         for agent in agents:
             if agent.present():
                 agent.bridge_project(self, project_dir)
@@ -196,17 +200,20 @@ class Installation:
         """Sources keyed by the name they keep in the destination dir."""
         return {source.name: source for source in sources}
 
-    def symlink(self, target: Path | str, link_path: Path) -> None:  # argument order mirrors ln -s
+    def symlink(self, target: Path | str, link_path: Path) -> bool:  # argument order mirrors ln -s
         """Create the link unless the name is taken by something we don't own — then warn and step aside."""
-        if (link_path.exists() or link_path.is_symlink()) and not self.owned(link_path):
+        # read before the unlink below erases the evidence — callers report a link the running session never saw
+        taken = link_path.exists() or link_path.is_symlink()
+        if taken and not self.owned(link_path):
             warn(f"{link_path} exists and is not ours — skipped")
-            return
+            return False
         link_path.unlink(missing_ok=True)
         try:
             link_path.symlink_to(target)
         except FileExistsError:
             # a concurrent sync won the unlink-to-create window — its link is identical
             pass
+        return not taken
 
     def prune(self, scan_dir: Path, keep: set[str]) -> None:
         """Remove owned links whose name left the keep-set — upstream renames and deletions leave no zombies."""
@@ -226,8 +233,8 @@ class Installation:
         return path.resolve().is_relative_to(self.repo_dir)
 
     def is_stack_neutral(self, rule_file: Path) -> bool:
-        """No paths: frontmatter means the rule loads everywhere — exactly those bridge globally."""
-        return not any(line.startswith("paths:") for line in self.frontmatter(rule_file))
+        """`reach: global` is the opt-in; every other rule reaches only the projects that declare its stack."""
+        return any(self.REACH_GLOBAL_RE.match(line) for line in self.frontmatter(rule_file))
 
     def shipped_rule_files(self) -> list[Path]:
         return sorted((self.repo_dir / "rules").glob("*.md"))
