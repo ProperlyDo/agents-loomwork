@@ -17,6 +17,7 @@ Shared rules for AI agents across our projects.
   1. Search the codebase for existing similar functionality
   2. Extend existing code if it nearly fits the need
   3. Ask if unsure whether something exists or should be extended
+- Reach for a third-party package only after that search comes up empty, and propose it before installing: MIT-licensed by preference, and when a non-MIT package is the clearly better fit, name it, its licence and why it wins, then wait for an OK.
 - Cross-cutting behavior (limits, ledgers, auditing) extends the app's established mechanism — a missing scope/flag on it, never a parallel sibling mechanism, even if simpler.
 - After implementing, verify with a quick cheap check (shell/curl for a backend, hot reload in the browser for a frontend) and hand the user a short "what to check" list instead of probing the running system end-to-end yourself; reserve deep verification for risky or hard-to-predict changes.
 - Tests must not make real API calls to AI models or third parties — mock/stub them unless explicitly asked.

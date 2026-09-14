@@ -100,6 +100,12 @@ class OwnershipTests(InstallationTestCase):
         rule.write_text("mine\n")
         self.assertFalse(self.installation.owned(rule))
 
+    def test_a_copy_we_wrote_is_ours(self) -> None:
+        copy = self.root / "python.md"
+        self.installation.copy_rule(self.clone / "rules" / "python.md", copy)
+        self.assertFalse(copy.is_symlink())
+        self.assertTrue(self.installation.owned(copy))
+
 
 class ReconcileTests(InstallationTestCase):
     def test_links_sources_and_prunes_what_left(self) -> None:
@@ -174,6 +180,33 @@ class WireProjectTests(InstallationTestCase):
         self.installation.wire_project(project, ())
         (project / "AGENTS.md").write_text("---\nstacks: [python, django]\n---\n")
         self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
+
+    def test_stack_rules_are_copied_not_linked(self) -> None:
+        # a link here resolves outside the project, which Claude gates behind an approval nothing raises
+        project = make_project(self.root)
+        self.installation.wire_project(project, ())
+        copy = self.container_of(project) / "python.md"
+        self.assertFalse(copy.is_symlink())
+        self.assertIn("# Python", copy.read_text())
+
+    def test_a_container_from_the_link_era_is_rewritten_in_place(self) -> None:
+        project = make_project(self.root)
+        container = self.container_of(project)
+        container.mkdir(parents=True)
+        (container / "python.md").symlink_to(self.installation.rules_dir / "python.md")
+        self.installation.wire_project(project, ())
+        self.assertFalse((container / "python.md").is_symlink())
+        # writing through the stale link would have edited the clone itself
+        self.assertEqual((self.clone / "rules" / "python.md").read_text(), STACK_RULE)
+
+    def test_a_foreign_file_in_the_container_is_skipped_with_a_warning(self) -> None:
+        project = make_project(self.root)
+        container = self.container_of(project)
+        container.mkdir(parents=True)
+        (container / "python.md").write_text("hand-made\n")
+        warning = self.stderr_of(lambda: self.installation.wire_project(project, ()))
+        self.assertIn("not ours", warning)
+        self.assertEqual((container / "python.md").read_text(), "hand-made\n")
 
     def test_a_dropped_stack_leaves_no_zombie_link(self) -> None:
         project = make_project(self.root, "stacks: [python, django]")

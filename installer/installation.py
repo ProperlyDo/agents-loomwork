@@ -44,6 +44,9 @@ class Installation:
     PROJECT_MD_TARGET: ClassVar[str] = "../../../AGENTS.md"
     # the wholesale rules-link shape agents lay beside their project config — namespace-free, so configs share it
     PROJECT_RULES_TARGET: ClassVar[str] = "../.agents/rules"
+    # what marks a project copy as ours; trailing, so the rule's own frontmatter keeps line one
+    COPY_MARKER: ClassVar[str] = "<!-- written by agents-config -->"
+    MARKER_SCAN_BYTES: ClassVar[int] = 200
     # two hops up from .aiassistant/rules/ is that same project root
     ASSISTANT_MD_TARGET: ClassVar[str] = "../../AGENTS.md"
     PULL_TIMEOUT_SECONDS: ClassVar[int] = 8
@@ -117,19 +120,20 @@ class Installation:
             self.unwire_project(project_dir, agents)
             return
         container.mkdir(parents=True, exist_ok=True)
-        newly_linked = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
+        # this one stays a link: it resolves to the project's own file, inside the project, so no gate applies
+        newly_wired = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
         keep = {"project.md"}
         for stack in stacks:
-            rule_target = self.rules_dir / f"{stack}.md"
-            if rule_target.exists():
-                newly_linked |= self.symlink(rule_target, container / f"{stack}.md")
+            rule_source = self.rules_dir / f"{stack}.md"
+            if rule_source.exists():
+                newly_wired |= self.copy_rule(rule_source, container / f"{stack}.md")
                 keep.add(f"{stack}.md")
             else:
                 warn(f"unknown stack '{stack}' in {project_dir}/AGENTS.md")
         self.prune(container, keep)
-        if newly_linked:
-            # the hosting session read its rules before this hook laid them — only a restart picks them up
-            say("rules newly linked — restart the session to load them")
+        if newly_wired:
+            # the hosting session read its rules before this hook wrote them — only a restart picks them up
+            say("rules newly wired — restart the session to load them")
         for agent in agents:
             if agent.present():
                 agent.bridge_project(self, project_dir)
@@ -215,6 +219,17 @@ class Installation:
             pass
         return not taken
 
+    def copy_rule(self, source: Path, destination: Path) -> bool:
+        """Write the rule into the project. A link here resolves outside it, and Claude gates those behind an approval only an @path import can raise."""
+        taken = destination.exists() or destination.is_symlink()
+        if taken and not self.owned(destination):
+            warn(f"{destination} exists and is not ours — skipped")
+            return False
+        # unlink before writing — a container left over from the link era would send the write into the clone
+        destination.unlink(missing_ok=True)
+        destination.write_text(f"{source.read_text().rstrip()}\n\n{self.COPY_MARKER}\n")
+        return not taken
+
     def prune(self, scan_dir: Path, keep: set[str]) -> None:
         """Remove owned links whose name left the keep-set — upstream renames and deletions leave no zombies."""
         if not scan_dir.is_dir():
@@ -224,13 +239,24 @@ class Installation:
                 entry.unlink(missing_ok=True)
 
     def owned(self, path: Path) -> bool:
-        """A symlink is ours when it lands in this clone, or wears one of our project-relative shapes."""
+        """Ours when it carries our marker, lands in this clone, or wears one of our project-relative shapes."""
         if not path.is_symlink():
-            return False
+            return self.is_our_copy(path)
         if os.readlink(path) in (self.PROJECT_MD_TARGET, self.PROJECT_RULES_TARGET, self.ASSISTANT_MD_TARGET):
             return True
         # following the agents-dir hop to its end keeps a second installation's links foreign — ours all land in our clone
         return path.resolve().is_relative_to(self.repo_dir)
+
+    def is_our_copy(self, path: Path) -> bool:
+        """A rule we wrote into a project — the marker is what ownership rests on once there is no link target to read."""
+        try:
+            with path.open("rb") as rule_file:
+                rule_file.seek(0, os.SEEK_END)
+                rule_file.seek(max(0, rule_file.tell() - self.MARKER_SCAN_BYTES))
+                tail = rule_file.read()
+        except OSError:
+            return False
+        return tail.decode("utf-8", "replace").rstrip().endswith(self.COPY_MARKER)
 
     def is_stack_neutral(self, rule_file: Path) -> bool:
         """`reach: global` is the opt-in; every other rule reaches only the projects that declare its stack."""
