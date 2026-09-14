@@ -19,6 +19,7 @@ Translation is the last step of an implementation — run this only when explici
 
 ## Rules
 
+- Judge a `.po` catalog only with `msgfmt --statistics -o /dev/null <po>` (inside the app container), before and after filling. Never infer pending entries from a line grep: a wrapped translation begins with `msgstr ""` and continues on the following lines.
 - Touch only pending entries — never blanket-retranslate the catalog.
 - Preserve placeholders exactly: `%(name)s`, `{name}`, and `.xlf` inline elements (`<x .../>`).
 - Reuse the catalog's existing terminology for recurring domain terms.
