@@ -181,6 +181,26 @@ class WireProjectTests(InstallationTestCase):
         (project / "AGENTS.md").write_text("---\nstacks: [python, django]\n---\n")
         self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
 
+    def test_replacing_a_link_era_rule_announces_itself(self) -> None:
+        # the migration rewrites content the running session never had — the same situation as a new rule
+        project = make_project(self.root)
+        container = self.container_of(project)
+        container.mkdir(parents=True)
+        (container / "python.md").symlink_to(self.installation.rules_dir / "python.md")
+        self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
+
+    def test_an_upstream_edit_announces_itself(self) -> None:
+        project = make_project(self.root)
+        self.installation.wire_project(project, ())
+        (self.clone / "rules" / "python.md").write_text(STACK_RULE + "- a rule added upstream\n")
+        self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
+
+    def test_a_dropped_stack_announces_itself(self) -> None:
+        project = make_project(self.root, "stacks: [python, django]")
+        self.installation.wire_project(project, ())
+        (project / "AGENTS.md").write_text("---\nstacks: [python]\n---\n")
+        self.assertIn("restart the session", self.stdout_of(lambda: self.installation.wire_project(project, ())))
+
     def test_stack_rules_are_copied_not_linked(self) -> None:
         # a link here resolves outside the project, which Claude gates behind an approval nothing raises
         project = make_project(self.root)

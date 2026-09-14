@@ -121,19 +121,19 @@ class Installation:
             return
         container.mkdir(parents=True, exist_ok=True)
         # this one stays a link: it resolves to the project's own file, inside the project, so no gate applies
-        newly_wired = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
+        rules_changed = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
         keep = {"project.md"}
         for stack in stacks:
             rule_source = self.rules_dir / f"{stack}.md"
             if rule_source.exists():
-                newly_wired |= self.copy_rule(rule_source, container / f"{stack}.md")
+                rules_changed |= self.copy_rule(rule_source, container / f"{stack}.md")
                 keep.add(f"{stack}.md")
             else:
                 warn(f"unknown stack '{stack}' in {project_dir}/AGENTS.md")
-        self.prune(container, keep)
-        if newly_wired:
-            # the hosting session read its rules before this hook wrote them — only a restart picks them up
-            say("rules newly wired — restart the session to load them")
+        rules_changed |= self.prune(container, keep)
+        if rules_changed:
+            # the hosting session collected its rules before this hook rewrote them — only a restart picks them up
+            say("rules changed — restart the session to load them")
         for agent in agents:
             if agent.present():
                 agent.bridge_project(self, project_dir)
@@ -205,38 +205,44 @@ class Installation:
         return {source.name: source for source in sources}
 
     def symlink(self, target: Path | str, link_path: Path) -> bool:  # argument order mirrors ln -s
-        """Create the link unless the name is taken by something we don't own — then warn and step aside."""
-        # read before the unlink below erases the evidence — callers report a link the running session never saw
-        taken = link_path.exists() or link_path.is_symlink()
-        if taken and not self.owned(link_path):
+        """Create the link unless the name is taken by something we don't own — then warn and step aside. True when the link now points somewhere new."""
+        if (link_path.exists() or link_path.is_symlink()) and not self.owned(link_path):
             warn(f"{link_path} exists and is not ours — skipped")
             return False
+        # read before the unlink below erases the evidence — callers report what the running session never saw
+        was = os.readlink(link_path) if link_path.is_symlink() else None
         link_path.unlink(missing_ok=True)
         try:
             link_path.symlink_to(target)
         except FileExistsError:
             # a concurrent sync won the unlink-to-create window — its link is identical
             pass
-        return not taken
+        return was != str(target)
 
     def copy_rule(self, source: Path, destination: Path) -> bool:
-        """Write the rule into the project. A link here resolves outside it, and Claude gates those behind an approval only an @path import can raise."""
+        """Write the rule into the project. A link here resolves outside it, and Claude gates those behind an approval only an @path import can raise. True when the project's copy now reads differently."""
         taken = destination.exists() or destination.is_symlink()
         if taken and not self.owned(destination):
             warn(f"{destination} exists and is not ours — skipped")
             return False
-        # unlink before writing — a container left over from the link era would send the write into the clone
+        rule = f"{source.read_text().rstrip()}\n\n{self.COPY_MARKER}\n".encode()
+        # a link from the era before copies counts as changed — its content never was in this session
+        was = destination.read_bytes() if taken and not destination.is_symlink() else None
+        # unlink before writing — a stale link here would send the write into the clone
         destination.unlink(missing_ok=True)
-        destination.write_text(f"{source.read_text().rstrip()}\n\n{self.COPY_MARKER}\n")
-        return not taken
+        destination.write_bytes(rule)
+        return was != rule
 
-    def prune(self, scan_dir: Path, keep: set[str]) -> None:
-        """Remove owned links whose name left the keep-set — upstream renames and deletions leave no zombies."""
+    def prune(self, scan_dir: Path, keep: set[str]) -> bool:
+        """Remove what we own whose name left the keep-set — upstream renames and deletions leave no zombies. True when something went."""
         if not scan_dir.is_dir():
-            return
+            return False
+        pruned = False
         for entry in list(scan_dir.iterdir()):
             if self.owned(entry) and entry.name not in keep:
                 entry.unlink(missing_ok=True)
+                pruned = True
+        return pruned
 
     def owned(self, path: Path) -> bool:
         """Ours when it carries our marker, lands in this clone, or wears one of our project-relative shapes."""
