@@ -22,6 +22,7 @@ Shared rules for AI agents across our projects.
 - After implementing, verify with a quick cheap check (shell/curl for a backend, hot reload in the browser for a frontend) and hand the user a short "what to check" list instead of probing the running system end-to-end yourself; reserve deep verification for risky or hard-to-predict changes.
 - Tests must not make real API calls to AI models or third parties — mock/stub them unless explicitly asked.
 - Infra changes come with the mechanical why stated first; a hack is either removed or its intent made explicit — the user picks, never silently adjust to a broken setup.
+- Answer compactly: the outcome and what it affects, in as few lines as that takes. No tables, walkthroughs or option surveys unless asked. Brevity never drops a caveat that changes a decision — cut the restating, not the warning.
 
 ## Naming (all languages)
 
