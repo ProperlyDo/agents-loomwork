@@ -40,7 +40,7 @@ class Installation:
     NAMESPACE_RE: ClassVar[re.Pattern] = re.compile(r"[\w.-]+", re.ASCII)
     STACKS_RE: ClassVar[re.Pattern] = re.compile(r"^stacks:\s*\[(.*)\]\s*$")
     REACH_GLOBAL_RE: ClassVar[re.Pattern] = re.compile(r"^reach:\s*global\s*$")
-    # three hops up from the container (.agents/rules/<namespace>/) is the project root; relative so the link survives project moves
+    # Claude reads the project's AGENTS.md itself, so nothing lays this shape any more — owning it still prunes the containers that carry one
     PROJECT_MD_TARGET: ClassVar[str] = "../../../AGENTS.md"
     # the wholesale rules-link shape agents lay beside their project config — namespace-free, so configs share it
     PROJECT_RULES_TARGET: ClassVar[str] = "../.agents/rules"
@@ -120,18 +120,15 @@ class Installation:
             self.unwire_project(project_dir, agents)
             return
         container.mkdir(parents=True, exist_ok=True)
-        # this one stays a link: it resolves to the project's own file, inside the project, so no gate applies
-        rules_changed = self.symlink(self.PROJECT_MD_TARGET, container / "project.md")
-        keep = {"project.md"}
+        written = {}
         for stack in stacks:
             rule_source = self.rules_dir / f"{stack}.md"
-            if rule_source.exists():
-                rules_changed |= self.copy_rule(rule_source, container / f"{stack}.md")
-                keep.add(f"{stack}.md")
-            else:
+            if not rule_source.exists():
                 warn(f"unknown stack '{stack}' in {project_dir}/AGENTS.md")
-        rules_changed |= self.prune(container, keep)
-        if rules_changed:
+                continue
+            written[f"{stack}.md"] = self.copy_rule(rule_source, container / f"{stack}.md")
+        pruned = self.prune(container, set(written))
+        if pruned or any(written.values()):
             # the hosting session collected its rules before this hook rewrote them — only a restart picks them up
             say("rules changed — restart the session to load them")
         for agent in agents:

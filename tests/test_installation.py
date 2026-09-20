@@ -143,18 +143,24 @@ class WireProjectTests(InstallationTestCase):
     def container_of(self, project: Path) -> Path:
         return project / ".agents" / "rules" / "acme"
 
-    def test_declared_stacks_and_the_project_file_are_linked(self) -> None:
+    def test_only_the_declared_stacks_land_in_the_container(self) -> None:
         project = make_project(self.root)
         self.installation.wire_project(project, ())
+        self.assertEqual({entry.name for entry in self.container_of(project).iterdir()}, {"python.md"})
+
+    def test_a_project_file_link_from_an_older_install_is_pruned(self) -> None:
+        project = make_project(self.root)
         container = self.container_of(project)
-        self.assertEqual({entry.name for entry in container.iterdir()}, {"python.md", "project.md"})
-        self.assertEqual((container / "project.md").resolve(), project / "AGENTS.md")
+        container.mkdir(parents=True)
+        (container / "project.md").symlink_to(Installation.PROJECT_MD_TARGET)
+        self.installation.wire_project(project, ())
+        self.assertEqual({entry.name for entry in container.iterdir()}, {"python.md"})
 
     def test_unknown_stack_warns_and_is_skipped(self) -> None:
         project = make_project(self.root, "stacks: [python, cobol]")
         warning = self.stderr_of(lambda: self.installation.wire_project(project, ()))
         self.assertIn("cobol", warning)
-        self.assertEqual({entry.name for entry in self.container_of(project).iterdir()}, {"python.md", "project.md"})
+        self.assertEqual({entry.name for entry in self.container_of(project).iterdir()}, {"python.md"})
 
     def test_dropping_the_declaration_unwires(self) -> None:
         project = make_project(self.root)
@@ -233,7 +239,7 @@ class WireProjectTests(InstallationTestCase):
         self.installation.wire_project(project, ())
         (project / "AGENTS.md").write_text("---\nstacks: [python]\n---\n")
         self.installation.wire_project(project, ())
-        self.assertEqual({entry.name for entry in self.container_of(project).iterdir()}, {"python.md", "project.md"})
+        self.assertEqual({entry.name for entry in self.container_of(project).iterdir()}, {"python.md"})
 
 
 class ClaudeCodeTests(InstallationTestCase):

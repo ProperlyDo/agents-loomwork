@@ -18,7 +18,7 @@ Rules:
    ```
 
    One name per file in [`rules/`](rules/): `python` + `django` for Django backends, `typescript` + `angular` for Angular frontends — a pair is always declared together. `git` is stack-neutral, so it applies everywhere and is never declared.
-3. **Every Claude Code session** — its hook pulls this repo, refreshes `~/.agents/`, and links the declared stack rules plus `project.md` into the project: `.agents/rules/<namespace>/` for Claude Code, flat into `.aiassistant/rules/` for JetBrains. It is the only agent that runs anything for us — see Supported agents for what the others need.
+3. **Every Claude Code session** — its hook pulls this repo, refreshes `~/.agents/`, and puts the declared stack rules into the project: `.agents/rules/<namespace>/` for Claude Code, flat into `.aiassistant/rules/` for JetBrains. The project's own `AGENTS.md` needs no help — Claude reads it natively. It is the only agent that runs anything for us — see Supported agents for what the others need.
 
 Skills:
 
@@ -32,7 +32,7 @@ The rest of this file is the detail behind those six lines.
 
 | Agent | Reads | Reaches it |
 |---|---|---|
-| **Claude Code** | `~/.claude/CLAUDE.md`, the stack-neutral rules in `~/.claude/rules/<namespace>/`, and `<project>/.claude/rules` | mechanically, and it is our host: its `SessionStart` hook runs the sync that wires every agent below |
+| **Claude Code** | `~/.claude/CLAUDE.md`, the stack-neutral rules in `~/.claude/rules/<namespace>/`, `<project>/.claude/rules`, and the project's own `AGENTS.md` — natively, since v2.1.277, as long as the project carries no `CLAUDE.md` | mechanically, and it is our host: its `SessionStart` hook runs the sync that wires every agent below |
 | **JetBrains AI Assistant** (PyCharm, WebStorm, …) | `<project>/.aiassistant/rules/*.md` — the universal layer, the stack-neutral rules, the declared stacks, and the project's own file | mechanically, but only when that hook runs. On a machine without Claude Code, run `install.py link <project-dir>` per project |
 | **OpenCode** and other `AGENTS.md` readers | `$OPENCODE_CONFIG_DIR/AGENTS.md`, whose routing sends them to the rule files in the clone | by instruction, not by loader — one global link, laid at install, no per-project work |
 
@@ -91,7 +91,7 @@ $OPENCODE_CONFIG_DIR/
 └── AGENTS.md      → ~/.agents/AGENTS.md
 <project>/
 ├── AGENTS.md                     # committed — the only per-project file
-├── .agents/rules/<namespace>/    # machine-local: the declared stacks, copied in, plus a project.md link
+├── .agents/rules/<namespace>/    # machine-local: the declared stacks, copied in
 ├── .aiassistant/rules/*.md       # for JetBrains: universal layer + git + declared stacks + project.md
 └── .claude/rules  → ../.agents/rules
 ```
@@ -113,7 +113,7 @@ The namespace persists only in the registered hook line; every subcommand takes 
 1. `git pull --ff-only` — silent, safe offline; keep `main` always pullable
 2. refresh the shared agents dir and every bridge
 3. wire the project:
-   - **Claude Code** — each declared stack's rule is **copied** into `.agents/rules/<namespace>/`, next to a `project.md` link back to the project's own `AGENTS.md`; `.claude/rules` links that dir wholesale, the same shape the skills CLI uses. Copies, not links, for the reason under When rules actually load
+   - **Claude Code** — each declared stack's rule is **copied** into `.agents/rules/<namespace>/`, and `.claude/rules` links that dir wholesale, the same shape the skills CLI uses. Copies, not links, for the reason under When rules actually load
    - **JetBrains** — flat links in `.aiassistant/rules/` instead; with no global channel, that set carries the universal layer and the stack-neutral rules too
    - **warnings on stderr** for an unknown stack name, and for frontmatter whose `stacks:` line failed to parse — that unwires the project, and a typo should not do so quietly
 
@@ -125,7 +125,7 @@ Claude loads every rule in the container at launch, so the whole declared set is
 
 **No `paths:` on a stack rule.** Path-scoped rules load when Claude *reads* a matching file through the Read tool — not when it cats one in the shell, and not when it creates one. A session that works through bash fires no trigger and gets no rules, silently. The declaration already scopes the rule to the project, so the second gate buys nothing and loses everything when it misfires.
 
-**No symlink that resolves outside the project.** Claude treats such a link [like an external import](https://code.claude.com/docs/en/memory#share-rules-across-projects-with-symlinks): it stays unloaded until external imports are approved for the project, and it asks for that approval *only* when a project memory file carries an `@path` import pointing outside — never for symlinks alone. With no such import anywhere here, the dialog can never appear, so the approval can never be given. Linked-in stack rules would sit there, gated, forever silent. Hence copies. `project.md` stays a link because it resolves to the project's own file, inside the project; `git.md` is unaffected because it is bridged into `$CLAUDE_CONFIG_DIR/rules/`, and user-scope rules are trusted without the dialog.
+**No symlink that resolves outside the project.** Claude treats such a link [like an external import](https://code.claude.com/docs/en/memory#share-rules-across-projects-with-symlinks): it stays unloaded until external imports are approved for the project, and it asks for that approval *only* when a project memory file carries an `@path` import pointing outside — never for symlinks alone. With no such import anywhere here, the dialog can never appear, so the approval can never be given. Linked-in stack rules would sit there, gated, forever silent. Hence copies. `git.md` is unaffected because it is bridged into `$CLAUDE_CONFIG_DIR/rules/`, and user-scope rules are trusted without the dialog.
 
 OpenCode and friends follow the routing in `AGENTS.md` instead: `rules/git.md` plus each declared stack's file, read from the clone — which is why they need no project links at all.
 
