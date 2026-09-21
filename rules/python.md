@@ -23,7 +23,8 @@
 ## Typing
 
 - Annotate new and touched code.
-- `from __future__ import annotations` at module top; bare names in annotations, never quoted strings.
+- Bare names in annotations, never quoted strings.
+- No `from __future__ import annotations` on Python 3.14+ — annotations are lazy there, and the import forces the old string form that runtime readers like pydantic must resolve. Below 3.14 it stays, as the only way forward references work.
 - Imports needed only for annotations go under `TYPE_CHECKING`.
 
 ## Docstrings
