@@ -1,0 +1,40 @@
+# Ruff's version is `rev` below and nowhere else — the lint job runs these same hooks
+# rather than installing its own ruff.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        exclude: ^uv\.lock$  # a resolved dependency tree is legitimately large
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: check-json
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+        exclude_types: [markdown]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.9
+    hooks:
+      - id: uv-lock
+
+  - repo: local
+    hooks:
+      # this package deletes files in the user's home; the suite is what says it deletes the right ones
+      - id: tests
+        name: unittest
+        entry: uv run python -m unittest discover
+        language: system
+        pass_filenames: false
+        files: ^(loomwork|tests)/

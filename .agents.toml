@@ -1,0 +1,2 @@
+source = "github.com/ProperlyDo/agents-rules"
+rules = ["python", "github"]

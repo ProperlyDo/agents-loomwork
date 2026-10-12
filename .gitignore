@@ -2,6 +2,7 @@
 .idea/
 __pycache__/
 
-# sessions opened in this repo may drop agent-local dirs — never committable here
+# loom writes these from .agents.toml, per machine — only the declaration is committed
 .agents/
 .claude/
+.aiassistant/

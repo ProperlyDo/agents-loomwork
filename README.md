@@ -1,154 +1,105 @@
-# agents-config
+# loomwork
 
-Shared rules and skills for AI agents across our projects. This repo is the single source for both, but they travel differently: **rules** are organized by stack and pushed to every machine by the installer here, while **skills** are a standalone catalog that projects pull from with the skills CLI — nothing in this repo installs them, and each project picks the ones it wants.
+Weaves shared agent rules through your projects. One repo holds the rules; `loom` puts the right ones into each project, in the place every agent reads them.
 
-A project opts in with one committed line: `stacks: [python, django]` in the frontmatter of its root `AGENTS.md`. Everything else is machinery around that line.
+It is the tool only — the rules live in their own repo, like [ProperlyDo/agents-rules](https://github.com/ProperlyDo/agents-rules).
 
 ## How it works
 
-Rules:
+1. **A project declares what it wants**, in a committed `.agents.toml`:
 
-1. **Once per machine** — `install.py install` registers Claude's `SessionStart` hook, fills `~/.agents/`, and lays the global bridges.
-2. **Once per project** — commit a root `AGENTS.md` whose frontmatter declares the stacks, followed by whatever is specific to that project:
-
-   ```markdown
-   ---
-   stacks: [python, django]
-   ---
+   ```toml
+   source = "github.com/ProperlyDo/agents-rules"
+   rules = ["python", "django"]
    ```
 
-   One name per file in [`rules/`](rules/): `python` + `django` for Django backends, `typescript` + `angular` for Angular frontends — a pair is always declared together. `git` is stack-neutral, so it applies everywhere and is never declared.
-3. **Every Claude Code session** — its hook pulls this repo, refreshes `~/.agents/`, and puts the declared stack rules into the project: `.agents/rules/<namespace>/` for Claude Code, flat into `.aiassistant/rules/` for JetBrains. The project's own `AGENTS.md` needs no help — Claude reads it natively. It is the only agent that runs anything for us — see Supported agents for what the others need.
+2. **`loom` copies those rules in**, to `.agents/rules/<namespace>/`, and points each installed agent at them: `.claude/rules` for Claude Code, `.aiassistant/rules/` for JetBrains, the global `AGENTS.md` for OpenCode.
 
-Skills:
+3. **Sessions keep themselves fresh.** Claude's plugin runs `loom sync` at session start, which pulls the rules repo and rewrites what changed. Each project is wired for the tools it was added with, so a Claude session never creates JetBrains wiring.
 
-4. **Add** — commit the skill to `skills/<name>/` here.
-5. **Install** — each project takes what it wants: `npx skills add ProperlyDo/agents-config --skill <name>`, pinned in that project's `skills-lock.json` (`-g` installs it for every project instead).
-6. **Update** — `npx skills update`; a skill does not travel with the session hook.
-
-The rest of this file is the detail behind those six lines.
-
-## Supported agents
-
-| Agent | Reads | Reaches it |
-|---|---|---|
-| **Claude Code** | `~/.claude/CLAUDE.md`, the stack-neutral rules in `~/.claude/rules/<namespace>/`, `<project>/.claude/rules`, and the project's own `AGENTS.md` — natively, since v2.1.277, as long as the project carries no `CLAUDE.md` | mechanically, and it is our host: its `SessionStart` hook runs the sync that wires every agent below |
-| **JetBrains AI Assistant** (PyCharm, WebStorm, …) | `<project>/.aiassistant/rules/*.md` — the universal layer, the stack-neutral rules, the declared stacks, and the project's own file | mechanically, but only when that hook runs. On a machine without Claude Code, run `install.py link <project-dir>` per project |
-| **OpenCode** and other `AGENTS.md` readers | `$OPENCODE_CONFIG_DIR/AGENTS.md`, whose routing sends them to the rule files in the clone | by instruction, not by loader — one global link, laid at install, no per-project work |
-
-Adding a fourth is one class in `installer/agents.py` overriding only the surfaces its tool can consume.
-
-## Install — once per machine
+## Install
 
 ```bash
-# one line — clones with your git auth when needed, then installs (the repo is private; anonymous curl can't reach it)
-[ -d ~/.agents-config ] || git clone git@github.com:ProperlyDo/agents-config.git ~/.agents-config && ~/.agents-config/install.py install
+uv tool install git+ssh://git@github.com/ProperlyDo/agents-loomwork   # provides `loom`
 
-# from an existing clone, wherever it lives; also updates the install
-./install.py install [--namespace <name>]
+cd <project>
+loom add                                                       # reads .agents.toml, fetches the rules, wires the project
 ```
 
-It touches three things and nothing else: the `SessionStart` hook in `$CLAUDE_CONFIG_DIR/settings.json`, the shared agents dir, and the bridges each present agent gets. Skills are not among them — those are the skills CLI's.
+`add` clones the declared source into `~/.local/share/loomwork/sources/` when the machine hasn't got it, so a new machine needs nothing else. Repeat `loom add` once per project.
 
-- **`--namespace`** defaults to the clone's origin owner, lowercased (`Acme/agents-config` → `acme`). It names our rules dir, keeping them apart from hand-made files, and lives only in the hook line.
-- **`~/.agents`** is fixed, not a knob — the skills CLI and OpenCode both look for that exact path.
-- **Rerun it** after a new agent's first launch: a tool is bridged only if its config dir already exists.
+With the Claude Code plugin installed instead, even that is unnecessary: the plugin ships the rules and its hook wires each project it opens.
 
-| Env var | Purpose | Default |
-|---|---|---|
-| `CLAUDE_CONFIG_DIR` | Claude's config dir | `~/.claude` |
-| `OPENCODE_CONFIG_DIR` | OpenCode's config dir | `$XDG_CONFIG_HOME/opencode` |
+**Developing the rules themselves?** `loom init .` inside your rules checkout points the machine at that working copy instead of a fetched clone, so edits take effect without pushing.
 
-The scripts read the same config-dir variables the agents themselves honor. Redirect an agent (e.g. with a per-account alias) and its links move with it.
+### What to ignore
 
-**Several accounts?** Give each its own config dir, then run the installer once per account inside that account's environment — each gets its own hook and links, so nothing mixes.
+`loom` writes machine-local files into a project. Commit `.agents.toml` and ignore the rest:
 
-**Several config repos in one account?** Their rules stay apart (namespace per dir, and a link belongs to the clone it resolves into), but both want the agent's single entry file — `CLAUDE.md`, OpenCode's `AGENTS.md`. The first one there keeps it; the second warns instead of stealing it. Prefer one repo per account.
+```gitignore
+.agents/
+.claude/*
+!.claude/settings.json     # keep if the project commits shared Claude settings
+.aiassistant/
+```
 
-Uninstall with `./install.py uninstall`. It removes the hook, the bridges, and everything this repo owns in the shared agents dir — nothing else. Add a `<project-dir>` argument to unwire one project instead. The clone stays; delete it yourself.
+## Commands
+
+| | |
+|---|---|
+| `init [source]` | point this machine at a rules checkout, defaulting to the current directory |
+| `add [project]` | ask which installed tools to wire this project for, then wire and record it. `--agents claude,jetbrains` skips the question |
+| `remove [project]` | unwire it and forget it |
+| `sync [project]` | pull the source, rewire one project or all of them |
+| `status` | the source, and every project under management |
+| `uninstall` | undo everything on this machine |
+
+`--namespace NAME` overrides the name the rules are filed under; it defaults to the source's owner segment.
+
+## Why copies, not links
+
+Claude treats a symlinked project rule whose target sits outside the project as an external import, and those stay unloaded until an approval that only an `@path` import can raise — so a linked rule is silently ignored. Everything loom writes is therefore a copy carrying a trailing `<!-- written by loomwork -->` marker, which is what makes it ours to replace or prune: the project's rules, `~/.agents/`, and the user-level bridges alike. Copying the user bridges also survives Cowork sessions, which skip a symlinked `~/.claude/CLAUDE.md`.
+
+The single exception is `.claude/rules → ../.agents/rules`, a link that resolves inside the project. It saves writing every rule twice: once where the `.agents` standard expects it, once where Claude looks.
 
 ## Layout
 
-| In the repo | Purpose |
+| | |
 |---|---|
-| `AGENTS.md` | the universal layer: rule routing, working style, naming, code comments. Loads in every session |
-| `rules/<stack>.md` | one rule file per stack, copied into the projects that declare it and loaded there in full. `reach: global` in the frontmatter makes a rule stack-neutral instead: bridged into the config dir, active in every project, declared or not (`git.md`) |
-| `skills/<name>/` | task procedures (Agent Skills spec) — a standalone catalog. Rules state constraints; skills own workflows. Each one is installed on demand by the skills CLI, which treats this repo like any other source |
-| `install.py` + `installer/` | the whole lifecycle: `install` / `sync` / `link` / `uninstall`. `installation.py` is the linking machinery; `agents.py` holds one class per agent — each overrides only the surfaces its tool can consume — and the `AGENTS` roster |
-| `tests/` | `python3 -m unittest discover` — no dependencies, so it runs wherever `install.py` does. Ownership, reconcile/prune and the wiring round trip: the parts that delete files |
+| `loomwork/cli.py` | argument parsing, nothing else |
+| `loomwork/loom.py` | what a command means: which projects, which agents, what gets recorded |
+| `loomwork/installation.py` | the mechanism: copy, link, prune, reconcile, ownership |
+| `loomwork/registry.py` | what this machine remembers — source, namespace, projects |
+| `loomwork/declaration.py` | the project's committed `.agents.toml` |
+| `loomwork/agents/` | one module per tool; each overrides only the surfaces its tool can consume |
+| `tests/` | `python -m unittest discover` |
 
-How it lands on a machine — the shared agents dir links into the clone, and agent dirs hold only bridges into the shared dir:
+Adding a tool is one module in `loomwork/agents/` and one entry in the roster. Anything that names a directory or file format belonging to one tool belongs in that tool's module — `installation.py` stays agent-agnostic.
 
+## Notes
+
+- `~/.agents` is fixed, not a knob: the skills CLI and OpenCode both look for that exact path.
+- The registry lives in `~/.agents/.loomwork.json` and records whatever gets wired, whether by `add` or by a session hook.
+- A project that declares another namespace is left alone rather than wired wrongly.
+- `add` records the tools you picked, and every later `sync` wires exactly those. A project a session hook meets for the first time is wired for the tool whose hook it was.
+- Running a second source on one machine is not supported yet: one source, one namespace.
+- Project-specific instructions belong in the project's own `AGENTS.md`, which loom never writes — Claude reads it natively, OpenCode directly, and JetBrains through a `project.md` link. Beware adding your own `CLAUDE.local.md`: its presence stops Claude reading `AGENTS.md` natively unless the file starts with `@AGENTS.md`.
+
+## Development
+
+```bash
+git clone git@github.com:ProperlyDo/agents-loomwork.git && cd agents-loomwork
+uv sync                        # creates .venv, installs click and this package, editable
+uv run python -m unittest discover
 ```
-~/.agents/                        # the shared agents dir — fixed location
-├── AGENTS.md
-├── rules/<namespace>/*.md        # all rules; the namespace keeps ours apart from hand-made files
-└── skills/<name>                 # the skills CLI's, not ours — we neither create nor prune these
-$CLAUDE_CONFIG_DIR/               # bridges only
-├── CLAUDE.md      → ~/.agents/AGENTS.md
-└── rules/<namespace>/            # the stack-neutral rules only
-$OPENCODE_CONFIG_DIR/
-└── AGENTS.md      → ~/.agents/AGENTS.md
-<project>/
-├── AGENTS.md                     # committed — the only per-project file
-├── .agents/rules/<namespace>/    # machine-local: the declared stacks, copied in
-├── .aiassistant/rules/*.md       # for JetBrains: universal layer + git + declared stacks + project.md
-└── .claude/rules  → ../.agents/rules
+
+Run the tool itself the same way, from whichever project you are testing against:
+
+```bash
+cd <project>
+uv run --project <path-to-this-clone> loom add
 ```
 
-The namespace persists only in the registered hook line; every subcommand takes the same `--namespace` flag. Wiring never destroys anything: a name occupied by a file we don't own is skipped with a warning. Our own copies carry a trailing `<!-- written by agents-config -->` — the marker is what ownership rests on where there is no link target to read, and Claude strips block comments before the rule enters context.
+Both forms run your working copy, so an edit takes effect on the next invocation — no install, no reinstall. `source .venv/bin/activate` in this repo is the alternative: it puts `loom` and `python` on PATH until you `deactivate`, after which `loom add` works from any directory without the `--project` flag.
 
-## Flow — the three rule steps in detail
-
-### What the project's `AGENTS.md` should hold
-
-- the `stacks:` frontmatter — the opt-in. Remove it and the next session unwires the project
-- one routing line: "coding rules for the declared stacks live under `.agents/rules/`", for agents that read only the project file
-- genuinely project-specific content, and nothing else. No pointers to this repo; generated entry files (`CLAUDE.md`, `GEMINI.md`) stay gitignored
-
-### What a session does
-
-`install.py sync` runs in three steps:
-
-1. `git pull --ff-only` — silent, safe offline; keep `main` always pullable
-2. refresh the shared agents dir and every bridge
-3. wire the project:
-   - **Claude Code** — each declared stack's rule is **copied** into `.agents/rules/<namespace>/`, and `.claude/rules` links that dir wholesale, the same shape the skills CLI uses. Copies, not links, for the reason under When rules actually load
-   - **JetBrains** — flat links in `.aiassistant/rules/` instead; with no global channel, that set carries the universal layer and the stack-neutral rules too
-   - **warnings on stderr** for an unknown stack name, and for frontmatter whose `stacks:` line failed to parse — that unwires the project, and a typo should not do so quietly
-
-Every pass reconciles: a file of ours whose name is no longer wanted gets removed, so upstream renames leave no zombies; anything we don't own is never touched. A copy is rewritten from the clone every session, so an edit upstream is one session behind at worst. Stack rules never bridge globally — the declaration is what admits them, so Django conventions never reach the Angular repo.
-
-### When rules actually load
-
-Claude loads every rule in the container at launch, so the whole declared set is in context before the first tool call. Two things have to hold for that, and both are why the container looks the way it does.
-
-**No `paths:` on a stack rule.** Path-scoped rules load when Claude *reads* a matching file through the Read tool — not when it cats one in the shell, and not when it creates one. A session that works through bash fires no trigger and gets no rules, silently. The declaration already scopes the rule to the project, so the second gate buys nothing and loses everything when it misfires.
-
-**No symlink that resolves outside the project.** Claude treats such a link [like an external import](https://code.claude.com/docs/en/memory#share-rules-across-projects-with-symlinks): it stays unloaded until external imports are approved for the project, and it asks for that approval *only* when a project memory file carries an `@path` import pointing outside — never for symlinks alone. With no such import anywhere here, the dialog can never appear, so the approval can never be given. Linked-in stack rules would sit there, gated, forever silent. Hence copies. `git.md` is unaffected because it is bridged into `$CLAUDE_CONFIG_DIR/rules/`, and user-scope rules are trusted without the dialog.
-
-OpenCode and friends follow the routing in `AGENTS.md` instead: `rules/git.md` plus each declared stack's file, read from the clone — which is why they need no project links at all.
-
-### Without Claude Code on the machine
-
-The session hook never fires, so two things become manual:
-
-- JetBrains rule links: `install.py link <project-dir>`, once per project
-- updates: nothing pulls this repo for you — rerun `./install.py install` from time to time
-
-## Adding rules and skills
-
-- Prove a convention in one project's `AGENTS.md` first, then promote it here. An always-on constraint becomes a rule; a task-shaped procedure becomes a skill.
-- A rule's frontmatter decides its reach — there is no list to maintain. Bare, it is a **stack rule**: placed only in the projects that declare that stack. With `reach: global` it is **stack-neutral**: bridged globally and active in every project, declared or not (`git.md`). So the question to ask before adding the marker is: is this rule true in *every* repo on the machine, including ones that never opted in? Only then mark it.
-- Skills ship through the skills CLI, ours included — this repo is just another source: `npx skills add -g ProperlyDo/agents-config --skill <name>` for every project, or without `-g` inside one project, which pins it in that project's `skills-lock.json`. The installer never touches `~/.agents/skills/`, so a skill edited here reaches machines on `npx skills update`, not on the next session.
-- Editing a skill often? On your own machine, swap the installed copy for a link at the clone — `npx skills remove -g <name>`, then `ln -s <clone>/skills/<name> ~/.agents/skills/<name>`. Edits go live, the CLI leaves entries it doesn't track alone, and everyone else still gets the pinned copy. It is a local override, not a setup step: nothing in this repo creates it.
-- State a convention in one place only. When both `AGENTS.md` and a rule file carry it, which copy wins is anyone's guess.
-- Rules cannot import each other. A pair stays bundled by the declaration alone — `stacks: [python, django]` links both files, and each one names the other as applying throughout.
-- A rule is always in context wherever it is wired, so its cost is paid every session in that project. Keep a stack file to what is true across that stack; anything narrower belongs in the project's own `AGENTS.md`.
-
-## Verifying
-
-- **`/memory` is the signal** — it lists what loaded at launch, which is the whole set: universal layer, global rules, the project's `AGENTS.md`, and every declared stack. A stack missing there means the project isn't wired, not that a trigger failed to fire; `/context` shows skills.
-- **The very first session in a fresh project clone starts without its rules.** Claude scans rule folders at launch, and the hook that fills them runs just after — one step too late for that single session. `sync` says so whenever what it leaves on disk differs from what the session collected — a rule written, replaced, edited upstream or dropped (*rules changed — restart the session to load them*); a restart is the whole fix, and every later session is complete. To skip it entirely, wire the project by hand right after cloning: `install.py link <project-dir>`.
-- **A deleted project `.claude/` is nearly self-healing.** The next session relays `rules`, and `git restore` brings back the committed `settings.json`. The `skills` link is the project's own hook, which only lays it when `.agents/skills` is missing — so recreate it by hand: `ln -s ../.agents/skills .claude/skills`.
-- **In PyCharm, our rules appear under `.aiassistant/rules`.** Open a rule file there — seeing our text means the IDE follows the links (a broken link is worth reporting). Then ask the AI chat *"what do the project rules say about git branch naming?"* — an answer naming `<type>/<short-kebab-desc>` proves the rules reach it. Rule type (Always / by patterns) is IDE-side metadata: check it under Settings → Tools → AI Assistant → Project Rules and set Always if needed. `.aiassistant/` stays gitignored — the links are machine-local.
+Tests need nothing but the venv and never touch `~/.agents`: every case builds a source, a project and an agents dir under a temp directory, and `Loom` takes `agents_dir` explicitly so a forgotten argument can't reach the real one.
