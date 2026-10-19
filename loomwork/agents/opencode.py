@@ -3,27 +3,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from loomwork.agents.base import EnvConfiguredAgent
-from loomwork.installation import Installation
+from loomwork.agents.base import Agent
 
 
-class OpenCode(EnvConfiguredAgent):
-    """Instruction follower: reads the global AGENTS.md and routes itself to the rule files at runtime — one link is the whole integration."""
+class OpenCode(Agent):
+    """Instruction follower: its global AGENTS.md sends it to the rules, since it loads no rules dir on its own."""
 
     NAME = "opencode"
 
-    CONFIG_DIR_ENV = "OPENCODE_CONFIG_DIR"
-    DEFAULT_CONFIG_DIR = "~/.config/opencode"
+    COMMAND = "opencode"
+    AGENTS_MD_NAME = "AGENTS.md"
 
-    def bridge(self, installation: Installation) -> None:
-        """One link: OpenCode's global AGENTS.md becomes ours."""
-        installation.copy_rule(installation.agents_file, self.config_dir / "AGENTS.md")
-
-    def unbridge(self, installation: Installation) -> None:
-        """Remove that link when it is ours."""
-        agents_file = self.config_dir / "AGENTS.md"
-        if installation.owned(agents_file):
-            agents_file.unlink()
-
-    def default_config_dir(self) -> Path:
-        return Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "opencode"
+    @property
+    def config_dir(self) -> Path:
+        # the XDG spec's config root, where an empty value counts as unset — as it does for OpenCode
+        return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "opencode"

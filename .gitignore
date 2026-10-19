@@ -5,4 +5,3 @@ __pycache__/
 # loom writes these from .agents.toml, per machine — only the declaration is committed
 .agents/
 .claude/
-.aiassistant/

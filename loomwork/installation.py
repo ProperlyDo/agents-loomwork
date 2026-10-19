@@ -1,214 +1,91 @@
 from __future__ import annotations
 
-import re
-import subprocess
-import sys
+import filecmp
+import os
+import shutil
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from loomwork import AGENTS_DIR, COMMAND_NAME, SOURCES_DIR, TOOL_NAME
-from loomwork.declaration import Declaration
+from loomwork import PACKAGE_NAME, paths
+from loomwork.output import warn
 
 if TYPE_CHECKING:
-    from loomwork.agents import Agent
+    from loomwork.registry import Registry
+    from loomwork.sources import Catalog
 
 
-def say(message: str) -> None:
-    print(f"{COMMAND_NAME}: {message}")
-
-
-def warn(message: str) -> None:
-    print(f"{COMMAND_NAME}: {message}", file=sys.stderr)
-
-
-def rmdir_quiet(directory: Path) -> None:
-    with suppress(OSError):
-        directory.rmdir()
-
-
-@dataclass(frozen=True)
-class Wiring:
-    """What a pass over one project did — the caller reports it, so the decision is made in one place."""
-
-    project_dir: Path
-    declaration: Declaration | None
-    wired: bool = False
-
-    def __str__(self) -> str:
-        if self.wired:
-            return f"wired {self.project_dir} ({', '.join(self.declaration.rules)})"
-        if self.declaration is None:
-            return f"nothing wired — no {Declaration.FILE_NAME} in {self.project_dir}"
-        return f"nothing wired — {self.project_dir} asks for the '{self.declaration.namespace}' rules"
+def _is_identical_copy(source: Path, destination: Path) -> bool:
+    """Whether destination holds exactly the files of source, with the same contents."""
+    if not destination.is_dir():
+        return False
+    carried = {file.relative_to(source) for file in source.rglob("*") if file.is_file()}
+    placed = {file.relative_to(destination) for file in destination.rglob("*") if file.is_file()}
+    if carried != placed:
+        return False
+    return all(filecmp.cmp(source / name, destination / name) for name in carried)
 
 
 @dataclass(frozen=True)
 class Installation:
-    """The agent-agnostic substrate — agents dir, project containers, link primitives. Agents only bridge into it, never build it."""
+    """The file work loom does for every agent: copies, links, and clearing what it owns."""
 
-    namespace: str
-    source: Path
-    agents_dir: Path = AGENTS_DIR
-    # what a project's hook line calls; the entry point resolves it, so a moved install rewrites itself on the next add
-    tool_command: str = COMMAND_NAME
-    # names this machine wired under before; their containers are ours to clear, a stranger's is not
-    former_namespaces: tuple[str, ...] = ()
+    # what the sources added to this profile define
+    catalog: Catalog
+    # what we placed, since a directory is shared with whatever else installs there
+    registry: Registry
+    # the directories place() changed, for the caller to announce
+    updated: list[Path] = field(default_factory=list)
 
-    REACH_GLOBAL_RE: ClassVar[re.Pattern] = re.compile(r"^reach:\s*global\s*$")
-    # Claude reads the project's AGENTS.md itself, so nothing lays this shape any more — owning it still prunes the containers that carry one
-    PROJECT_MD_TARGET: ClassVar[str] = "../../../AGENTS.md"
-    # what marks a project copy as ours; trailing, so the rule's own frontmatter keeps line one
-    COPY_MARKER: ClassVar[str] = f"<!-- written by {TOOL_NAME} -->"
-    # copies on machines installed before the rename still carry this one, and must stay ours to be pruned
-    COPY_MARKER_BEFORE_RENAME: ClassVar[str] = "<!-- written by agents-config -->"
-    PULL_TIMEOUT_SECONDS: ClassVar[int] = 8
+    # trailing, so the rule's own frontmatter keeps line one
+    COPY_MARKER: ClassVar[str] = f"<!-- written by {PACKAGE_NAME} -->"
 
-    def initialize(self, agents: tuple[Agent, ...]) -> None:
-        """Once per machine: converge the agents dir and every present tool's bridges."""
-        bridged = [agent for agent in agents if agent.present()]
-        for agent in bridged:
-            agent.forget_machine_hook(self)
-        if not self.pull():
-            warn("could not pull — using the source as it stands")
-        self.converge(agents)
-        say(f"source '{self.namespace}' from {self.source} into {self.agents_dir}")
-        if bridged:
-            say(f"bridged {', '.join(type(agent).__name__ for agent in bridged)}")
-        else:
-            warn("no agent config dirs found — nothing bridged; rerun after an agent's first launch")
-
-    def wire(self, project_dir: Path, agents: tuple[Agent, ...]) -> Wiring:
-        """Converge the agents dir and bridges, then wire one project — the whole of what a sync does for it."""
-        self.converge(agents)
-        return self.wire_project(project_dir, agents)
-
-    def converge(self, agents: tuple[Agent, ...]) -> None:
-        """Populate the agents dir and lay every present agent's bridges."""
-        self.populate_agents_dir()
-        for agent in agents:
-            if agent.present():
-                agent.bridge(self)
-
-    def tear_down(self, agents: tuple[Agent, ...]) -> None:
-        """Remove the machine-wide half: every bridge, then the agents-dir content we own."""
-        # bridges first, then the agents dir they point into
-        for agent in agents:
-            agent.forget_machine_hook(self)
-            agent.unbridge(self)
-        self.prune(self.rules_dir, set())
-        rmdir_quiet(self.rules_dir)
-        rmdir_quiet(self.agents_dir / "rules")
-        if self.owned(self.agents_file):
-            self.agents_file.unlink()
-        rmdir_quiet(self.agents_dir)
-        say(f"uninstalled from {self.agents_dir} and every bridged agent — the clone at {self.source} remains")
-
-    def populate_agents_dir(self) -> None:
-        """Land AGENTS.md and every rule in the agents dir — the one place agent dirs read from."""
-        self.reconcile(self.by_name(self.shipped_rule_files()), self.rules_dir)
-        self.copy_rule(self.source / "AGENTS.md", self.agents_file)
-
-    def wire_project(self, project_dir: Path, agents: tuple[Agent, ...]) -> Wiring:
-        """Materialize the container in .agents/rules and let each agent bridge it; a missing declaration unwires."""
-        container = project_dir / ".agents" / "rules" / self.namespace
-        declaration = Declaration.read(project_dir)
-        if declaration is None:
-            # a removed declaration is the opt-out — everything we placed goes with it
-            self.unwire_project(project_dir, agents)
-            return Wiring(project_dir, None)
-        if declaration.namespace != self.namespace:
-            # the project asked for someone else's rules; leaving it alone is not the same as unwiring it
-            return Wiring(project_dir, declaration)
-        container.mkdir(parents=True, exist_ok=True)
-        written = {}
-        for name in declaration.rules:
-            rule_file = self.rules_dir / f"{name}.md"
-            if not rule_file.is_file():
-                warn(f"unknown rule '{name}' in {project_dir / Declaration.FILE_NAME}")
-                continue
-            written[rule_file.name] = self.copy_rule(rule_file, container / rule_file.name)
-        pruned = self.prune(container, set(written))
-        # .claude/rules reaches every namespace dir in .agents/rules, so a rename would leave the old rules loading too
-        pruned |= self.drop_former_containers(project_dir)
-        if pruned or any(written.values()):
-            # the hosting session collected its rules before this hook rewrote them — only a restart picks them up
-            say("rules changed — restart the session to load them")
-        for agent in agents:
-            if agent.present():
-                agent.bridge_project(self, project_dir)
-        return Wiring(project_dir, declaration, wired=True)
-
-    def drop_former_containers(self, project_dir: Path) -> bool:
-        """Clear containers this machine left under a name it no longer uses. True when one went."""
-        dropped = False
-        for former in self.former_namespaces:
-            container = project_dir / ".agents" / "rules" / former
-            # prune takes only what carries our marker, so a foreign file in there keeps the directory alive
-            dropped |= self.prune(container, set())
-            rmdir_quiet(container)
-        return dropped
-
-    def unwire_project(self, project_dir: Path, agents: tuple[Agent, ...]) -> None:
-        """Drop our container and every agent's per-project pointers."""
-        self.drop_former_containers(project_dir)
-        agents_rules_dir = project_dir / ".agents" / "rules"
-        # a prune with no keep-set removes everything of ours
-        self.prune(agents_rules_dir / self.namespace, set())
-        rmdir_quiet(agents_rules_dir / self.namespace)
-        rmdir_quiet(agents_rules_dir)
-        for agent in agents:
-            agent.unbridge_project(self, project_dir)
-
-    def frontmatter(self, markdown_file: Path) -> list[str]:
-        """The lines between the leading --- fences — body text never reads as configuration."""
-        if not markdown_file.is_file():
-            return []
-        lines = markdown_file.read_text().splitlines()
-        if not lines or lines[0].strip() != "---":
-            return []
-        for position, line in enumerate(lines[1:], start=1):
-            if line.strip() == "---":
-                return lines[1:position]
-        return []
-
-    def pull(self) -> bool:
-        """Fast-forward the clone, reporting whether it worked — the session hook stays silent, install speaks up."""
-        # macOS ships no timeout(1); subprocess provides the bound the hook otherwise had to enforce
-        try:
-            pulled = subprocess.run(
-                ["git", "-C", str(self.source), "pull", "--ff-only", "--quiet"],
-                timeout=self.PULL_TIMEOUT_SECONDS,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return False
-        return pulled.returncode == 0
-
-    def reconcile(self, wanted: dict[str, Path | str], into_dir: Path) -> bool:
-        """Put every entry in the dir under its given name and prune what no longer belongs. A Path is copied in, a string is the target of a link."""
+    def place(self, wanted: dict[str, Path], into_dir: Path) -> tuple[str, ...]:
+        """Copy each wanted rule file or skill folder into the directory, clear ours no longer wanted, and return the names that landed."""
+        if not wanted and not into_dir.is_dir():
+            return ()
         into_dir.mkdir(parents=True, exist_ok=True)
-        changed = False
-        for name, target in wanted.items():
-            if isinstance(target, Path):
-                changed |= self.copy_rule(target, into_dir / name)
-            else:
-                changed |= self.symlink(target, into_dir / name)
-        return self.prune(into_dir, set(wanted)) or changed
+        # two sessions starting at once would otherwise copy into the same folder together
+        with paths.locked(into_dir):
+            landing = {
+                name: original
+                for name, original in wanted.items()
+                if not self._unowned_exists(into_dir / original.name)
+            }
+            entry_names = {original.name for original in landing.values()}
+            # recorded before copying, so a copy cut short is still ours to redo
+            self.registry.record_owned_in(into_dir, [*self.registry.owned_in(into_dir), *entry_names])
+            changed = False
+            for original in landing.values():
+                destination = into_dir / original.name
+                if original.is_dir():
+                    changed |= self._copy_folder(original, destination)
+                else:
+                    changed |= self._copy_file(original, destination)
+            changed |= self.clear_owned_in(into_dir, keep=entry_names)
+        if changed:
+            self.updated.append(into_dir)
+        return tuple(landing)
 
-    def by_name(self, sources: list[Path]) -> dict[str, Path]:
-        """Sources keyed by the name they keep in the destination dir."""
-        return {source.name: source for source in sources}
+    def place_links(self, targets: dict[str, str], into_dir: Path) -> None:
+        """Lay a link under each name, and clear the owned links no longer wanted."""
+        into_dir.mkdir(parents=True, exist_ok=True)
+        for name, target in targets.items():
+            self.symlink(target, into_dir / name)
+        self.clear_owned_in(into_dir, keep=set(targets))
+
+    def place_file(self, original: Path, destination: Path) -> bool:
+        """Copy one rule file to destination with our marker, unless something not owned is there. True when it now reads differently."""
+        if self._unowned_exists(destination):
+            return False
+        return self._copy_file(original, destination)
 
     def symlink(self, target: Path | str, link_path: Path) -> bool:  # argument order mirrors ln -s
-        """Create the link unless the name is taken by something we don't own — then warn and step aside. True when the link now points somewhere new."""
-        if (link_path.exists() or link_path.is_symlink()) and not self.owned(link_path):
-            warn(f"{link_path} exists and is not ours — skipped")
+        """Link link_path to target, unless something not owned is there. True when the link now points somewhere new."""
+        if self._unowned_exists(link_path):
             return False
-        # read before the unlink below erases the evidence — callers report what the running session never saw
+        # read before the unlink below erases it
         was = str(link_path.readlink()) if link_path.is_symlink() else None
         link_path.unlink(missing_ok=True)
         # a concurrent sync may win the unlink-to-create window, and its link is identical
@@ -216,72 +93,80 @@ class Installation:
             link_path.symlink_to(target)
         return was != str(target)
 
-    def copy_rule(self, source: Path, destination: Path) -> bool:
-        """Write the rule into the project. A link here resolves outside it, and Claude gates those behind an approval only an @path import can raise. True when the project's copy now reads differently."""
-        taken = destination.exists() or destination.is_symlink()
-        if taken and not self.owned(destination):
-            warn(f"{destination} exists and is not ours — skipped")
+    def clear_owned_in(self, directory: Path, keep: set[str] | None = None) -> bool:
+        """Delete the owned files, folders and links directly in directory, except the names in keep. True when something went."""
+        keep = keep or set()
+        if not directory.is_dir():
             return False
-        rule = f"{source.read_text().rstrip()}\n\n{self.COPY_MARKER}\n".encode()
-        # a link from the era before copies counts as changed — its content never was in this session
-        was = destination.read_bytes() if taken and not destination.is_symlink() else None
+        cleared = False
+        for entry in list(directory.iterdir()):
+            if not self.owned(entry) or entry.name in keep:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+            cleared = True
+        # the record keeps only what is still there
+        recorded = self.registry.owned_in(directory)
+        self.registry.record_owned_in(directory, [name for name in recorded if (directory / name).exists()])
+        return cleared
+
+    def owned(self, path: Path) -> bool:
+        """Ours when it is a link aiming where we lay them, recorded as placed by us, or a file with our marker."""
+        if path.is_symlink():
+            return self._is_owned_link(path)
+        if path.name in self.registry.owned_in(path.parent):
+            return True
+        return path.is_file() and self._is_owned_copy(path)
+
+    def _unowned_exists(self, path: Path) -> bool:
+        """Whether something not owned exists at path — warned about, since it is then left alone."""
+        taken = path.exists() or path.is_symlink()
+        if taken and not self.owned(path):
+            warn(f"{path} exists and is not ours — skipped")
+            return True
+        return False
+
+    def _copy_folder(self, original: Path, destination: Path) -> bool:
+        """Copy a skill folder over whatever of ours was there. True when it changed."""
+        if _is_identical_copy(original, destination):
+            return False
+        shutil.rmtree(destination, ignore_errors=True)
+        shutil.copytree(original, destination)
+        return True
+
+    def _copy_file(self, original: Path, destination: Path) -> bool:
+        """Write a rule's text to destination with our marker. True when it now reads differently."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        rule = f"{self._unmarked(original)}\n\n{self.COPY_MARKER}\n".encode()
+        # a link was never content, so replacing one always counts as changed
+        was = None
+        if destination.is_file() and not destination.is_symlink():
+            was = destination.read_bytes()
         # unlink before writing — a stale link here would send the write into the clone
         destination.unlink(missing_ok=True)
         destination.write_bytes(rule)
         return was != rule
 
-    def prune(self, scan_dir: Path, keep: set[str]) -> bool:
-        """Remove what we own whose name left the keep-set — upstream renames and deletions leave no zombies. True when something went."""
-        if not scan_dir.is_dir():
+    def _unmarked(self, original: Path) -> str:
+        """A rule's text without our marker, so a copy taken from a copy never carries two."""
+        return original.read_text().rstrip().removesuffix(self.COPY_MARKER).rstrip()
+
+    def _is_owned_link(self, link: Path) -> bool:
+        """Owned links aim into the .agents/ of a directory that holds the link, or at the AGENTS.md beside it."""
+        aimed = Path(os.path.normpath(link.parent / link.readlink()))
+        if aimed.is_relative_to(Path.home() / paths.AGENTS_DIR_NAME):
+            # home holds every project, but its own .agents/ is no project's
             return False
-        pruned = False
-        for entry in list(scan_dir.iterdir()):
-            if self.owned(entry) and entry.name not in keep:
-                entry.unlink(missing_ok=True)
-                pruned = True
-        return pruned
+        return any(
+            aimed.is_relative_to(root / paths.AGENTS_DIR_NAME) or aimed == root / "AGENTS.md" for root in link.parents
+        )
 
-    def owned(self, path: Path) -> bool:
-        """Ours when it carries our marker, lands in this clone, or wears one of our project-relative shapes."""
-        if not path.is_symlink():
-            return self.is_our_copy(path)
-        if str(path.readlink()) in self.project_shapes():
-            return True
-        # a link resolving to nothing is nobody's, and a moved source leaves ours looking foreign otherwise
-        if not path.exists():
-            return True
-        # our namespace's staging dir, never the whole agents dir: a second installation's links must stay foreign
-        landed = path.resolve()
-        # a clone under SOURCES_DIR is one we fetched, so links into it stay ours after `init` repoints the machine
-        return any(landed.is_relative_to(ours) for ours in (self.source, self.rules_dir, SOURCES_DIR))
-
-    @classmethod
-    def project_shapes(cls) -> frozenset[str]:
-        """Every relative link shape we own inside a project: our own container's, plus whatever each agent lays."""
-        # the agents import Installation, so this one stays function-local to break that cycle
-        from loomwork.agents import AGENTS  # noqa: PLC0415
-
-        return frozenset({cls.PROJECT_MD_TARGET, *(shape for agent in AGENTS for shape in agent.PROJECT_SHAPES)})
-
-    def is_our_copy(self, path: Path) -> bool:
-        """A rule we wrote into a project — the marker is what ownership rests on once there is no link target to read."""
+    def _is_owned_copy(self, path: Path) -> bool:
+        """Whether the file ends with our marker."""
         try:
             content = path.read_text(errors="replace")
         except OSError:
             return False
-        return content.rstrip().endswith((self.COPY_MARKER, self.COPY_MARKER_BEFORE_RENAME))
-
-    def is_stack_neutral(self, rule_file: Path) -> bool:
-        """`reach: global` is the opt-in; every other rule reaches only the projects that declare its stack."""
-        return any(self.REACH_GLOBAL_RE.match(line) for line in self.frontmatter(rule_file))
-
-    def shipped_rule_files(self) -> list[Path]:
-        return sorted((self.source / "rules").glob("*.md"))
-
-    @property
-    def rules_dir(self) -> Path:
-        return self.agents_dir / "rules" / self.namespace
-
-    @property
-    def agents_file(self) -> Path:
-        return self.agents_dir / "AGENTS.md"
+        return content.rstrip().endswith(self.COPY_MARKER)

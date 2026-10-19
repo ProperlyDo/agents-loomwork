@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Weaves shared agent rules through your projects"
 requires-python = ">= 3.11"
 # kept minimal on purpose: a session-start hook runs this, so the venv it lands in must stay simple to resolve
-dependencies = ["click==8.5.0"]
+dependencies = [
+    "click==8.5.0",
+    "questionary==2.1.1",
+]
 
 [project.scripts]
 loom = "loomwork.cli:cli"
