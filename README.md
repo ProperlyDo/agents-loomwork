@@ -25,15 +25,37 @@ This repo is loom alone — the rules live in a repo of their own, which loom ca
 
 3. **Sessions keep themselves fresh.** `loom init` registers a `SessionStart` hook in Claude's settings; it runs `loom sync` only where a `.agents.toml` exists, so a project that never opted in costs nothing. Each project is wired for the agents it was set up for.
 
-A source is a directory with a `rules/` or a `skills/` directory — that is what makes it one. Its own `loom.toml` says what it builds on, and what every project gets whether it asked or not:
+### The two files
+
+**`.agents.toml`** sits in a project and is committed: what the project takes. One `[[source]]` block per source, each with:
+
+- `source` — where the rules repo is: a clone url, a bare `<host>/<owner>/<repo>` with an optional folder after it when the rules sit in a subdirectory, or a path on this machine. A relative path counts from the project.
+- `rules` — names from the source's `rules/<name>.md`.
+- `skills` — names from the source's `skills/<name>/`.
+
+With a single source, the header can go:
 
 ```toml
+source = "git.example.com/your-team/agent-rules"
+rules = ["python", "django"]
+```
+
+**`loom.toml`** sits in a source, beside its `rules/` and `skills/`: what the source hands out. It is optional.
+
+```toml
+# a source this one builds on — recorded first, so this one wins a filename they share
+[[source]]
+source = "git.example.com/your-team/base-rules"
+
+# what every project gets, declared or not
 [global]
-rules  = ["git"]
+rules = ["git"]
 skills = []
 ```
 
-Two spellings of one repo — a clone url, a bare `<host>/<owner>/<repo>`, a checkout on this machine — resolve to the same source, so a project declaring the url and a machine reading the checkout are using the same rules. `AGENTS.md` beside `rules/` is the optional universal layer, not the authority on anything.
+A `[[source]]` here uses the same spellings as in `.agents.toml`, with a relative path counting from this source. A name under `[global]` that the source does not ship is skipped. The source's `AGENTS.md` is its universal layer, copied to each agent's user-level file — only when the source has a `loom.toml`, so a third-party repo keeps its contributor `AGENTS.md` to itself.
+
+A source is any directory with a `rules/` or a `skills/` directory. Two spellings of one repo — a clone url, a bare `<host>/<owner>/<repo>`, a checkout on this machine — resolve to the same source, so a project declaring the url and a machine reading the checkout are using the same rules.
 
 ## Install
 
