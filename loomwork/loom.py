@@ -257,8 +257,9 @@ class Loom:
 
     def unignored(self, project: Path) -> list[str]:
         """What we write into a project that its .gitignore does not cover yet."""
-        existing = _gitignore_text(project)
-        return [path for path in self.generated if path not in existing]
+        # whole lines, since .claude/settings.local.json contains .claude/ yet leaves the rest of it unignored
+        ignored = {line.strip().strip("/") for line in _gitignore_text(project).splitlines()}
+        return [path for path in self.generated if path.strip("/") not in ignored]
 
     @property
     def registry(self) -> Registry:
