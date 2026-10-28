@@ -1,8 +1,7 @@
 # loomwork
 
 > **Draft.**\
-> Still shaping: commands, the declaration's keys and where files land can change between runs.
-> Not packaged yet either — `uvx --from git+ssh://git@github.com/ProperlyDo/agents-loomwork loom` runs it without installing.
+> Still shaping: commands, the declaration's keys and where files land can change between releases.
 
 Weaves shared agent rules through your projects. One repo holds the rules; `loom` puts the right ones into each project, in the place every agent reads them.
 
@@ -62,7 +61,7 @@ A source is any directory with a `rules/` or a `skills/` directory. Two spelling
 macOS and Linux. On Windows, run loom, the agent and the project inside WSL — on Windows itself, loom's locks, links and hook do not work.
 
 ```bash
-uv tool install git+ssh://git@github.com/ProperlyDo/agents-loomwork   # provides `loom`
+uv tool install loomwork                                             # provides `loom`
 cd <project> && loom init                                             # declares, wires, registers the hook
 ```
 
@@ -171,3 +170,5 @@ uv run --project <path-to-this-clone> loom init
 Both forms run your working copy, so an edit takes effect on the next invocation — no install, no reinstall. `source .venv/bin/activate` in this repo is the alternative: it puts `loom` and `python` on PATH until you `deactivate`, after which `loom init` works from any directory without the `--project` flag.
 
 Tests need nothing but the venv and never touch your home: every case builds its source, project and agent config dirs under a temp directory, through `SandboxTestCase` in `tests/fixtures.py`. They run no git either: `tests/__init__.py` makes any git call a test did not patch fail loudly, so a test that needs an answer from git patches the function that gives it.
+
+To release, raise the version and push it to `main`: `uv version --bump patch` (or `minor`, `major`), commit, push. The Release workflow tests, publishes to PyPI, tags `v<version>` and creates the GitHub release; a push that leaves the version alone releases nothing.

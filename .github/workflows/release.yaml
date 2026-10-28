@@ -1,0 +1,110 @@
+---
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+# two quick pushes must not release the same version twice
+concurrency: release
+
+jobs:
+  check:
+    name: Check for a new version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      unreleased: ${{ steps.version.outputs.unreleased }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Compare the version with PyPI
+        id: version
+        run: |
+          version="$(uv version --short)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if curl --silent --fail --output /dev/null "https://pypi.org/pypi/loomwork/$version/json"; then
+            echo "unreleased=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "unreleased=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs:
+      - check
+    if: needs.check.outputs.unreleased == 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Test
+        run: uv run --locked python -m unittest discover
+
+      - name: Build
+        run: uv build
+
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    # trusted publishing: PyPI trusts this workflow and environment, so no token is stored
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+    needs:
+      - check
+      - build
+    env:
+      TAG: v${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Download the distribution packages
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      # files already on PyPI are skipped, so re-running after a later step failed gets past here
+      - name: Publish on PyPI
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/
+
+      - name: Tag the release
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

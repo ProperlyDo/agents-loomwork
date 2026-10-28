@@ -2,7 +2,25 @@
 name = "loomwork"
 version = "0.1.0"
 description = "Weaves shared agent rules through your projects"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">= 3.11"
+authors = [{ name = "ProperlyDo" }]
+keywords = ["agents", "claude-code", "opencode", "rules", "skills", "AGENTS.md"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 # kept minimal on purpose: a session-start hook runs this, so the venv it lands in must stay simple to resolve
 dependencies = [
     "click==8.5.0",
@@ -11,6 +29,10 @@ dependencies = [
 
 [project.scripts]
 loom = "loomwork.cli:cli"
+
+[project.urls]
+Repository = "https://github.com/ProperlyDo/agents-loomwork"
+Issues = "https://github.com/ProperlyDo/agents-loomwork/issues"
 
 [build-system]
 requires = ["hatchling"]
