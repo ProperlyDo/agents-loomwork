@@ -65,6 +65,8 @@ uv tool install loomwork                                             # provides 
 cd <project> && loom init                                             # declares, wires, registers the hook
 ```
 
+To run the latest `main` instead of a release: `uv tool install git+https://github.com/ProperlyDo/agents-loomwork`.
+
 `init` is the only command a new machine needs. It asks which agents to wire, where the rules come from — unless the project's declaration already says, in which case it takes that — and which rules and skills this project uses.
 
 The hook calls loom by the full path `init` was started from, so a checkout run with `uv run` works as well as an install. Rerun `init` after moving either. Avoid `uvx` for `init`: its path is a cache entry that can be cleared.
