@@ -1,6 +1,6 @@
 [project]
 name = "loomwork"
-version = "0.1.0"
+version = "0.1.1"
 description = "Weaves shared agent rules through your projects"
 readme = "README.md"
 license = "MIT"
