@@ -171,4 +171,4 @@ Both forms run your working copy, so an edit takes effect on the next invocation
 
 Tests need nothing but the venv and never touch your home: every case builds its source, project and agent config dirs under a temp directory, through `SandboxTestCase` in `tests/fixtures.py`. They run no git either: `tests/__init__.py` makes any git call a test did not patch fail loudly, so a test that needs an answer from git patches the function that gives it.
 
-To release, raise the version and push it to `main`: `uv version --bump patch` (or `minor`, `major`), commit, push. The Release workflow tests, publishes to PyPI, tags `v<version>` and creates the GitHub release; a push that leaves the version alone releases nothing.
+To release, run **Open release PR** in GitHub Actions and pick `patch`, `minor` or `major`. It opens a PR that raises the version; merging it lets the **Release** workflow test, publish to PyPI, tag `v<version>` and create the GitHub release. A push to `main` that leaves the version alone releases nothing.

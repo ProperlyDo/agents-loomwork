@@ -1,6 +1,8 @@
 .DS_Store
 .idea/
 __pycache__/
+.venv/
+dist/
 
 # loom writes these from .agents.toml, per machine — only the declaration is committed
 .agents/

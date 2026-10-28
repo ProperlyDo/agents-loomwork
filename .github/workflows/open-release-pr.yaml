@@ -1,0 +1,43 @@
+---
+name: Open release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+jobs:
+  open-release-pr:
+    name: Open release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Raise the version
+        env:
+          BUMP: ${{ inputs.bump }}
+        # --no-sync: a .venv in the checkout would end up in the release commit
+        run: echo "VERSION=$(uv version --bump "$BUMP" --no-sync --short)" >> "$GITHUB_ENV"
+
+      - name: Open the PR
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          base: main
+          branch: release-${{ env.VERSION }}
+          commit-message: "chore: release v${{ env.VERSION }}"
+          title: Release v${{ env.VERSION }}
+          body: Merging releases v${{ env.VERSION }} to PyPI.
+          delete-branch: true
