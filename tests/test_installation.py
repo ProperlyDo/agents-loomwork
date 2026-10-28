@@ -347,11 +347,11 @@ class ProfileHookTests(InstallationTestCase):
 
     def test_a_hook_is_ours_whatever_path_it_was_written_with(self) -> None:
         for command in ("loom sync /x", "/opt/homebrew/bin/loom sync /x"):
-            self.assertTrue(self.agent.our_hook(self.installation, {"command": command}), command)
+            self.assertTrue(self.agent.our_hook({"command": command}), command)
 
     def test_a_foreign_sync_command_is_not_ours(self) -> None:
-        self.assertFalse(self.agent.our_hook(self.installation, {"command": "rsync sync /x"}))
-        self.assertFalse(self.agent.our_hook(self.installation, {"command": "echo loom sync"}))
+        self.assertFalse(self.agent.our_hook({"command": "rsync sync /x"}))
+        self.assertFalse(self.agent.our_hook({"command": "echo loom sync"}))
 
 
 class OpenCodeTests(InstallationTestCase):

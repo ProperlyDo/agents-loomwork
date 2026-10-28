@@ -21,10 +21,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
 ]
-# kept minimal on purpose: a session-start hook runs this, so the venv it lands in must stay simple to resolve
+# a session-start hook runs this, so the venv it lands in must stay simple to resolve
 dependencies = [
-    "click==8.5.0",
-    "questionary==2.1.1",
+    "click==8.5.0",  # the command line
+    "questionary==2.1.1",  # init's interactive prompts
 ]
 
 [project.scripts]
@@ -35,11 +35,14 @@ Repository = "https://github.com/ProperlyDo/agents-loomwork"
 Issues = "https://github.com/ProperlyDo/agents-loomwork/issues"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # the license expression and license-files
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["loomwork"]
+
+[tool.hatch.build.targets.sdist]
+include = ["loomwork", "README.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 120
@@ -47,24 +50,52 @@ line-length = 120
 [tool.ruff.lint]
 # What every prefix below covers: https://docs.astral.sh/ruff/rules/
 select = [
-    "A", "ANN", "ARG", "B", "BLE", "C4", "C90", "DTZ", "E", "EXE", "F", "FLY", "FURB", "G", "I",
-    "ICN", "INP", "INT", "ISC", "LOG", "N", "PERF", "PGH", "PIE", "PL", "PTH", "RET", "RSE", "RUF",
-    "S", "SIM", "SLOT", "T10", "T20", "TID", "UP", "W", "YTT",
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "BLE",
+    "C4",
+    "C90",
+    "DTZ",
+    "E",
+    "EXE",
+    "F",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "ICN",
+    "INP",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PL",
+    "PTH",
+    "RET",
+    "RSE",
+    "RUF",
+    "S",
+    "SIM",
+    "SLOT",
+    "T10",
+    "T20",
+    "TID",
+    "UP",
+    "W",
+    "YTT",
 ]
 ignore = [
     "E501",  # the formatter owns line length; E501 only fires on what it cannot split
     "ISC001",  # conflicts with the formatter
     "S603",  # every subprocess call here is a fixed git command with path arguments
     "S607",  # git is resolved from PATH on purpose, so a machine's own install is used
-    "T201",  # a CLI talks to the terminal; say() and warn() are the only printers
+    "T201",  # a CLI talks to the terminal; info(), warn() and error() are the only printers
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN", "PLR2004", "S101", "S108", "SIM117"]  # the ordinary shape of a test
-# the contract's no-op defaults take the arguments their overrides need
-"loomwork/agents/*.py" = ["ARG002", "ARG004"]
-# click hands every callback the context and the parameter, whether or not one is read
-"loomwork/cli.py" = ["ARG001"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12

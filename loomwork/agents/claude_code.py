@@ -39,35 +39,35 @@ class ClaudeCode(Agent):
 
     def bridge(self, installation: Installation) -> tuple[Path, ...]:
         """Claude's user-level surfaces, and the session hook that keeps every project in sync."""
-        return super().bridge(installation) + self._register_hook(installation)
+        return super().bridge(installation) + self._register_hook()
 
     def unbridge(self, installation: Installation) -> None:
         """Mirror of bridge(), the session hook included."""
-        self._strip_hook(installation, self.config_dir / "settings.json")
+        self._strip_hook(self.config_dir / "settings.json")
         super().unbridge(installation)
 
-    def our_hook(self, installation: Installation, hook: dict) -> bool:
+    def our_hook(self, hook: dict) -> bool:
         """Ours by the command it calls, whatever path or entry-point name it was written with."""
         # the hook line guards before it calls, so what it actually runs is the last statement
         words = shlex.split(hook.get("command", "").rsplit(";", 1)[-1])
         return bool(words) and Path(words[0]).name == COMMAND_NAME and "sync" in words[1:]
 
-    def _register_hook(self, installation: Installation) -> tuple[Path, ...]:
+    def _register_hook(self) -> tuple[Path, ...]:
         """Put our SessionStart hook in this config dir's settings, keeping every hook that is already there."""
         settings_file = self.config_dir / "settings.json"
         settings = json.loads(settings_file.read_text()) if settings_file.is_file() else {}
         was = json.dumps(settings, sort_keys=True)
         entries = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
         # replace-not-append: our own entries go first, so reruns and a moved install converge on one line
-        self._drop_our_entries(installation, entries)
-        hook = {"type": "command", "command": self._hook_command(installation), "timeout": self.HOOK_TIMEOUT_SECONDS}
+        self._drop_our_entries(entries)
+        hook = {"type": "command", "command": self._hook_command(), "timeout": self.HOOK_TIMEOUT_SECONDS}
         entries.append({"hooks": [hook]})
         if json.dumps(settings, sort_keys=True) != was:
             settings_file.parent.mkdir(parents=True, exist_ok=True)
             settings_file.write_text(json.dumps(settings, indent=2) + "\n")
         return (settings_file,)
 
-    def _strip_hook(self, installation: Installation, settings_file: Path) -> None:
+    def _strip_hook(self, settings_file: Path) -> None:
         """Remove exactly our entries from a settings file, and any key or file that empties out."""
         if not settings_file.is_file():
             return
@@ -75,7 +75,7 @@ class ClaudeCode(Agent):
         entries = settings.get("hooks", {}).get("SessionStart")
         if entries is None:
             return
-        self._drop_our_entries(installation, entries)
+        self._drop_our_entries(entries)
         if not entries:
             del settings["hooks"]["SessionStart"]
         if not settings["hooks"]:
@@ -87,12 +87,12 @@ class ClaudeCode(Agent):
             return
         settings_file.write_text(json.dumps(settings, indent=2) + "\n")
 
-    def _drop_our_entries(self, installation: Installation, entries: list[dict]) -> None:
+    def _drop_our_entries(self, entries: list[dict]) -> None:
         for entry in entries:
-            entry["hooks"] = [hook for hook in entry.get("hooks", []) if not self.our_hook(installation, hook)]
+            entry["hooks"] = [hook for hook in entry.get("hooks", []) if not self.our_hook(hook)]
         entries[:] = [entry for entry in entries if entry.get("hooks")]
 
-    def _hook_command(self, installation: Installation) -> str:
+    def _hook_command(self) -> str:
         """The guard is the opt-in: a project with no declaration never calls us, and the hook still exits clean."""
         # the profile is named, so a session syncs the config dir it was launched with
         return (
