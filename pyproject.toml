@@ -24,6 +24,7 @@ classifiers = [
 # a session-start hook runs this, so the venv it lands in must stay simple to resolve
 dependencies = [
     "click==8.5.0",  # the command line
+    "pyyaml==6.0.3",  # skill frontmatter
     "questionary==2.1.1",  # init's interactive prompts
 ]
 

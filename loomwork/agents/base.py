@@ -35,7 +35,7 @@ class Agent(ABC):
         return (
             *self._publish_agents_md(installation),
             *self._bridge_global_rules(installation),
-            *self._bridge_global_skills(installation),
+            *self.bridge_global_skills(installation),
         )
 
     def unbridge(self, installation: Installation) -> None:
@@ -53,7 +53,7 @@ class Agent(ABC):
         """Point the agent at this project's rules and skills, naming where it reads them from."""
         return (
             *self._bridge_project_rules(installation, project_dir),
-            *self._bridge_project_skills(installation, project_dir),
+            *self.bridge_project_skills(installation, project_dir),
         )
 
     def unbridge_project(self, installation: Installation, project_dir: Path) -> None:
@@ -66,6 +66,37 @@ class Agent(ABC):
             installation.clear_owned_in(linked_dir)
             paths.remove_if_empty(linked_dir)
             paths.remove_if_empty(linked_dir.parent)
+
+    def bridge_global_skills(self, installation: Installation) -> tuple[Path, ...]:
+        """Copy each globally wanted skill into the agent's own skills dir."""
+        skills_dir = self.config_dir / "skills"
+        catalog = installation.catalog
+        if not installation.place(catalog.skill_folders(catalog.global_skills), skills_dir):
+            return ()
+        return (skills_dir,)
+
+    def bridge_project_skills(self, installation: Installation, project_dir: Path) -> tuple[Path, ...]:
+        """One link per skill, since skills are found one level deep and the project's own stay beside ours."""
+        skills = paths.project_skills_dir(project_dir)
+        if not self.PROJECT_SKILLS_DIR:
+            if not skills.is_dir():
+                return ()
+            return (skills,)
+        skills_dir = project_dir / self.PROJECT_SKILLS_DIR
+        self._drop_whole_dir_link(installation, skills_dir)
+        placed = []
+        if skills.is_dir():
+            placed = sorted(skill for skill in skills.iterdir() if skill.is_dir())
+        if not placed and not skills_dir.is_dir():
+            return ()
+        installation.place_links(
+            {skill.name: paths.link_target(skill, skills_dir) for skill in placed},
+            skills_dir,
+        )
+        paths.remove_if_empty(skills_dir)
+        if not placed:
+            return ()
+        return (skills_dir,)
 
     def project_folders(self) -> tuple[str, ...]:
         """The folders this agent's bridges live in at a project's root — what the project's .gitignore must cover."""
@@ -99,14 +130,6 @@ class Agent(ABC):
             return ()
         return (rules_dir,)
 
-    def _bridge_global_skills(self, installation: Installation) -> tuple[Path, ...]:
-        """Copy each globally wanted skill into the agent's own skills dir."""
-        skills_dir = self.config_dir / "skills"
-        catalog = installation.catalog
-        if not installation.place(catalog.skill_folders(catalog.global_skills), skills_dir):
-            return ()
-        return (skills_dir,)
-
     def _bridge_project_rules(self, installation: Installation, project_dir: Path) -> tuple[Path, ...]:
         """Link .agents/rules one level down in the agent's rules dir, beside whatever the project keeps there."""
         copied_rules = paths.project_rules_dir(project_dir)
@@ -123,29 +146,6 @@ class Agent(ABC):
         if not installation.owned(rules_link):
             return ()
         return (rules_link,)
-
-    def _bridge_project_skills(self, installation: Installation, project_dir: Path) -> tuple[Path, ...]:
-        """One link per skill, since skills are found one level deep and the project's own stay beside ours."""
-        skills = paths.project_skills_dir(project_dir)
-        if not self.PROJECT_SKILLS_DIR:
-            if not skills.is_dir():
-                return ()
-            return (skills,)
-        skills_dir = project_dir / self.PROJECT_SKILLS_DIR
-        self._drop_whole_dir_link(installation, skills_dir)
-        placed = []
-        if skills.is_dir():
-            placed = sorted(skill for skill in skills.iterdir() if skill.is_dir())
-        if not placed and not skills_dir.is_dir():
-            return ()
-        installation.place_links(
-            {skill.name: paths.link_target(skill, skills_dir) for skill in placed},
-            skills_dir,
-        )
-        paths.remove_if_empty(skills_dir)
-        if not placed:
-            return ()
-        return (skills_dir,)
 
     def _drop_whole_dir_link(self, installation: Installation, directory: Path) -> None:
         """A link of ours standing in for the whole dir would put the links meant for it inside .agents/."""

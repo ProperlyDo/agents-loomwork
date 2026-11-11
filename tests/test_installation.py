@@ -359,6 +359,24 @@ class OpenCodeTests(InstallationTestCase):
         super().setUp()
         self.agent = OpenCode()
 
+    def make_manual_skill(self, name: str = "support") -> None:
+        """Add a skill with `disable-model-invocation` to the source; its description needs YAML quoting."""
+        skill = self.clone / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: 'duty: the board'\ndisable-model-invocation: true\n---\n\nArguments: $ARGUMENTS\n"
+        )
+
+    def wire_with_skills(self, skills: tuple[str, ...]) -> Path:
+        """Declare these skills, wire the project for OpenCode, and return its commands dir."""
+        project = self.root / "project"
+        if project.is_dir():
+            declare(project, ("python",), skills=skills)
+        else:
+            make_project(self.root, skills=skills)
+        self.wire_project(project, (self.agent,))
+        return project / ".opencode" / "commands"
+
     def test_its_agents_file_comes_and_goes_with_the_bridge(self) -> None:
         self.agent.bridge(self.installation)
         self.assertIn("# Agent Instructions", (self.agent.config_dir / "AGENTS.md").read_text())
@@ -379,6 +397,59 @@ class OpenCodeTests(InstallationTestCase):
     def test_an_empty_xdg_config_home_falls_back_to_the_home_config(self) -> None:
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
             self.assertEqual(OpenCode().config_dir, Path("~/.config/opencode").expanduser())
+
+    def test_a_manual_skill_gets_a_command_that_loads_it(self) -> None:
+        self.make_manual_skill()
+        command = (self.wire_with_skills(("support",)) / "support.md").read_text()
+        self.assertIn("description: 'duty: the board'", command)
+        self.assertIn("`skill` tool with id `support`", command)
+        # OpenCode replaces every occurrence, so a second one would repeat what was typed
+        self.assertEqual(command.count("$ARGUMENTS"), 1)
+
+    def test_a_manual_skill_without_a_description_gets_a_command_without_frontmatter(self) -> None:
+        self.make_manual_skill()
+        (self.clone / "skills" / "support" / "SKILL.md").write_text(
+            "---\ndisable-model-invocation: true\n---\n\nDo it.\n"
+        )
+        command = (self.wire_with_skills(("support",)) / "support.md").read_text()
+        self.assertTrue(command.startswith("Call the `skill` tool with id `support`"))
+
+    def test_a_skill_the_model_may_start_gets_no_command(self) -> None:
+        commands = self.wire_with_skills(("translate",))
+        self.assertFalse(commands.exists())
+        self.assertFalse(commands.parent.exists())
+
+    def test_a_command_goes_when_its_skill_is_dropped(self) -> None:
+        self.make_manual_skill()
+        commands = self.wire_with_skills(("support",))
+        own = commands / "deploy.md"
+        own.write_text("Deploy $ARGUMENTS.\n")
+        self.wire_with_skills(())
+        self.assertEqual(list(commands.iterdir()), [own])
+
+    def test_a_projects_own_command_of_that_name_is_left_alone(self) -> None:
+        self.make_manual_skill()
+        own = make_project(self.root, skills=("support",)) / ".opencode" / "commands" / "support.md"
+        own.parent.mkdir(parents=True)
+        own.write_text("Mine.\n")
+        warning = self.stderr_of(lambda: self.wire_with_skills(("support",)))
+        self.assertIn("not ours", warning)
+        self.assertEqual(own.read_text(), "Mine.\n")
+
+    def test_unwiring_takes_the_commands_and_the_folder_they_made(self) -> None:
+        self.make_manual_skill()
+        commands = self.wire_with_skills(("support",))
+        self.agent.unbridge_project(self.installation, self.root / "project")
+        self.assertFalse(commands.parent.exists())
+
+    def test_a_global_manual_skill_gets_a_command_in_the_config_dir(self) -> None:
+        self.make_manual_skill()
+        (self.clone / Manifest.FILE_NAME).write_text('[global]\nskills = ["support", "translate"]\n')
+        commands = self.agent.config_dir / "commands"
+        self.agent.bridge(self.installation)
+        self.assertEqual([command.name for command in commands.iterdir()], ["support.md"])
+        self.agent.unbridge(self.installation)
+        self.assertFalse(commands.exists())
 
 
 class UniversalLayerTests(InstallationTestCase):
