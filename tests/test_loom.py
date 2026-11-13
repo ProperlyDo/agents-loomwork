@@ -311,12 +311,12 @@ class QuestionnaireTests(SandboxTestCase):
         self.assertTrue(valid_directory("~/.claude-work"))
 
     def test_gitignore_covers_every_agents_folders(self) -> None:
-        self.assertEqual(self.loom.generated, (".agents/", ".claude/"))
+        self.assertEqual(self.loom.generated, (".agents/", ".claude/", ".opencode/"))
 
     def test_a_file_inside_a_folder_does_not_cover_the_folder(self) -> None:
         self.project.mkdir()
         (self.project / ".gitignore").write_text(".claude/settings.local.json\n/.agents\n")
-        self.assertEqual(self.loom.unignored(self.project), [".claude/"])
+        self.assertEqual(self.loom.unignored(self.project), [".claude/", ".opencode/"])
 
     def test_the_default_source_is_the_one_most_projects_declare(self) -> None:
         for name in ("one", "two"):

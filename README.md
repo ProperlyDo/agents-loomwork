@@ -20,7 +20,7 @@ This repo is loom alone — the rules live in a repo of their own, which loom ca
 
    A second `[[source]]` block adds a second rules repo — copies land in one flat directory, and a later source wins a filename it shares with an earlier one.
 
-2. **`loom` copies in what it names**: rules into `.agents/rules/`, skills into `.agents/skills/`. Each wired agent is then pointed at them, beside whatever the project keeps for that agent: `.claude/rules/loom` and one `.claude/skills/<name>` link per skill for Claude Code. OpenCode gets no per-project pointer: the global rules land in `~/.config/opencode/rules/`, and the source's `AGENTS.md`, copied to `~/.config/opencode/AGENTS.md`, sends it to `.agents/rules/` itself.
+2. **`loom` copies in what it names**: rules into `.agents/rules/`, skills into `.agents/skills/`. Each wired agent is then pointed at them, beside whatever the project keeps for that agent: `.claude/rules/loom` and one `.claude/skills/<name>` link per skill for Claude Code. OpenCode gets no per-project pointer to rules or skills: the global rules land in `~/.config/opencode/rules/`, and the source's `AGENTS.md`, copied to `~/.config/opencode/AGENTS.md`, sends it to `.agents/rules/` itself. What it does get is one `.opencode/commands/<name>.md` per manual skill — see [Skills as OpenCode commands](#skills-as-opencode-commands).
 
 3. **Sessions keep themselves fresh.** `loom init` registers a `SessionStart` hook in Claude's settings; it runs `loom sync` only where a `.agents.toml` exists, so a project that never opted in costs nothing. Each project is wired for the agents it was set up for.
 
@@ -98,9 +98,10 @@ Start Claude for that work through the alias. The hook carries the flag, so each
 ```gitignore
 .agents/
 .claude/
+.opencode/
 ```
 
-Keep `.claude/settings.json` if the project commits shared Claude settings — ignore `.claude/*` with an exception for it instead.
+Keep `.claude/settings.json` if the project commits shared Claude settings — ignore `.claude/*` with an exception for it instead. The same goes for `.opencode/` when the project commits commands or config of its own there.
 
 ## Commands
 
@@ -118,6 +119,20 @@ Claude treats a symlinked project rule whose target sits outside the project as 
 
 Links are used only where the target resolves inside the project: `.claude/rules/loom` and each `.claude/skills/<name>` onto `.agents/`. That saves writing every rule twice — once where the `.agents` standard expects it, once where the agent looks.
 
+## Skills as OpenCode commands
+
+A skill whose frontmatter says `disable-model-invocation: true` is manual: Claude lists it under `/<name>` and never starts it by itself. OpenCode honours the flag too, but lists such a skill under `@<name>` only — its `/` menu is fed from `commands/`.
+
+So for each such skill loom also writes a command: `.opencode/commands/<name>.md` in a project, `~/.config/opencode/commands/<name>.md` for a global one. The command is an entry to the skill and nothing more — it carries the skill's description, tells OpenCode to load the skill, and passes on what was typed after the command. The skill stays the one definition, supporting files included.
+
+- **Arguments arrive as text.** A `$ARGUMENTS` inside the skill is not filled in by OpenCode — the command states the arguments and the model matches them up.
+- **Only the description carries over.** `allowed-tools`, `argument-hint` and `context` are Claude's and stay in the skill.
+- **Every manual skill in `.agents/skills/` gets one.** That includes a skill the skills CLI put there, and its command is ours to replace and remove.
+- **Older OpenCode ignores the flag.** Builds from before October 2026 offer a manual skill to the model like any other; the command works there all the same.
+- **A command of the project's own wins.** A file already at that name is left alone, with a warning.
+- **A command replaces a built-in of its name.** A manual skill called `review`, `init` or `goal` takes over OpenCode's own `/review`, `/init` or `/goal`.
+- **The prompt ends with loom's marker.** The `<!-- written by loomwork -->` line is what makes the file ours to replace, so the model sees it too.
+
 ## Layout
 
 | | |
@@ -133,6 +148,7 @@ Links are used only where the target resolves inside the project: `.claude/rules
 | `loomwork/sources.py` | a rules repo on this machine: fetch it, give two spellings of it one identity, and read what a set of them defines (`Catalog`) |
 | `loomwork/registry.py` | what this profile remembers — the sources added to it, its projects, what it owns where |
 | `loomwork/declaration.py` | the committed `.agents.toml` and `loom.toml`, read and written |
+| `loomwork/skill.py` | a skill folder, read for what its `SKILL.md` frontmatter says |
 | `loomwork/agents/` | one module per agent; each overrides only the surfaces its agent can consume |
 | `tests/` | `python -m unittest discover` |
 

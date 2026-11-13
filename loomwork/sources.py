@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from loomwork import COMMAND_NAME, git, paths
 from loomwork.declaration import Manifest
 from loomwork.output import error, info, warn
+from loomwork.skill import Skill
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class Catalog:
         agents_md = None
         for checkout in checkouts:
             rules |= {rule.stem: rule for rule in (checkout / "rules").glob("*.md")}
-            skill_files = (checkout / "skills").glob("*/SKILL.md")
+            skill_files = (checkout / "skills").glob(f"*/{Skill.FILE_NAME}")
             skills |= {skill_file.parent.name: skill_file.parent for skill_file in skill_files}
             manifest = Manifest.read(checkout)
             marked_global_rules |= set(manifest.global_rules)
