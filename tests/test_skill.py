@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from loomwork.skill import Skill
+from loomwork.sources.skill import Skill
 from tests.fixtures import SandboxTestCase
 
 
@@ -27,13 +27,13 @@ class SkillTests(SandboxTestCase):
         skill = self.skill_reading(
             "---\ndescription: short\n---\n\n# Support\n\n---\n\ndisable-model-invocation: true\n"
         )
-        self.assertEqual(skill.frontmatter, {"description": "short"})
+        self.assertEqual(skill._frontmatter, {"description": "short"})
 
     def test_a_file_that_opens_with_no_frontmatter_says_nothing(self) -> None:
-        self.assertEqual(self.skill_reading("# Support\n\n---\nname: support\n---\n").frontmatter, {})
+        self.assertEqual(self.skill_reading("# Support\n\n---\nname: support\n---\n")._frontmatter, {})
 
     def test_frontmatter_that_does_not_parse_says_nothing(self) -> None:
-        self.assertEqual(self.skill_reading("---\ndescription: [unclosed\n---\n").frontmatter, {})
+        self.assertEqual(self.skill_reading("---\ndescription: [unclosed\n---\n")._frontmatter, {})
 
     def test_a_folder_without_its_skill_file_says_nothing(self) -> None:
-        self.assertEqual(Skill(self.root / "skills" / "missing").frontmatter, {})
+        self.assertEqual(Skill(self.root / "skills" / "missing")._frontmatter, {})

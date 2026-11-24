@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 import questionary
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def can_ask() -> bool:
@@ -44,13 +46,14 @@ def ask(question: str, default: str = "", check: Callable[[str], bool | str] | N
         return check(value)
 
     # shown rather than pre-filled: a filled buffer turns typing into appending to the suggestion
-    shown = f"{question} [{default}]:" if default else f"{question}:"
+    shown = f"{question}:"
+    if default:
+        shown = f"{question} [{default}]:"
     return _answered(questionary.text(shown, validate=accepting_the_default)).strip() or default
 
 
 def pick(question: str, choices: list[Choice], *, required: bool = False) -> tuple[str, ...]:
     """The names of the choices ticked with <space>."""
-    # nothing to choose from is not worth a question
     if not choices:
         return ()
     options = [
@@ -60,11 +63,7 @@ def pick(question: str, choices: list[Choice], *, required: bool = False) -> tup
         for choice in choices
     ]
     if required:
-        prompt = questionary.checkbox(
-            question,
-            choices=options,
-            validate=lambda picked: True if picked else "nothing picked — <space> selects, <enter> confirms",
-        )
+        prompt = questionary.checkbox(question, choices=options, validate=_something_picked)
     else:
         prompt = questionary.checkbox(question, choices=options)
     return tuple(_answered(prompt))
@@ -81,3 +80,9 @@ def _answered(prompt: questionary.Question) -> Any:  # noqa: ANN401 — question
     if answer is None:
         raise click.Abort
     return answer
+
+
+def _something_picked(picked: list[str]) -> bool | str:
+    if not picked:
+        return "nothing picked — <space> selects, <enter> confirms"
+    return True

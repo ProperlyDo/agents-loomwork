@@ -1,250 +1,296 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from loomwork.agents import ClaudeCode, OpenCode
-from loomwork.declaration import Declaration, DeclaredSource, Manifest
+from loomwork import paths
+from loomwork.agents import Agent, ClaudeCode, OpenCode
+from loomwork.errors import LoomError
 from loomwork.loom import Loom
-from loomwork.questions import valid_directory, valid_source, wanted_config_dir
-from loomwork.registry import Registry
-from tests.fixtures import SOURCE, SandboxTestCase, make_clone, make_project
+from loomwork.sources.manifest import Manifest
+from loomwork.targets.declaration import Declaration, DeclaredSource
+from loomwork.targets.gitignore import Gitignore
+from tests.fixtures import (
+    SOURCE,
+    TEAM_SOURCE,
+    SandboxTestCase,
+    WiredTargetDirTestCase,
+    declare,
+    make_clone,
+    make_target_dir,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
-class ProfileTests(SandboxTestCase):
-    """What a profile is: the registry in its config dir, and the sources added to it."""
-
-    def test_without_a_source_it_says_what_to_run(self) -> None:
-        with self.assertRaises(SystemExit):
-            self.loom.installation()
-
-    def test_the_source_added_to_this_profile_is_what_acts(self) -> None:
-        clone = make_clone(self.root, "clone")
-        self.loom.registry.add_source("forge.test/acme/rules", clone, "forge.test/acme/rules")
-        self.assertEqual(self.loom.installation().catalog.rules["python"], clone / "rules" / "python.md")
-
-    def test_it_sits_in_the_config_dir_it_was_given(self) -> None:
-        work = self.root / "home" / ".claude-work"
-        self.assertEqual(Loom(work).registry.path, work / Registry.FILE_NAME)
-        self.assertEqual(Loom(work).agents_named(("claude",))[0].config_dir, work)
-
-
-class RegistryFollowsWiringTests(SandboxTestCase):
-    """Whatever wires a project records it — a hook-driven sync counts as much as a hand-typed init."""
+class SetupsApartTests(SandboxTestCase):
+    """Two setups on one machine: the standard dirs with one source, and dirs of their own with another."""
 
     def setUp(self) -> None:
         super().setUp()
-        self.project = make_project(self.root)
+        # the sources are filed under repo addresses, so an update takes the clone's way to the remote
+        self.enterContext(patch("loomwork.git.match_remote", return_value=True))
         self.loom.registry.add_source(SOURCE, make_clone(self.root), SOURCE)
-        self.enterContext(patch("loomwork.git.pull", return_value=True))
+        self.loom.registry.add_source(TEAM_SOURCE, self.make_work_clone(), TEAM_SOURCE)
+        self.target_dir = make_target_dir(self.root)
+        self.work_target_dir = self.root / "work-target"
+        self.work_target_dir.mkdir()
+        declare(self.work_target_dir, ("python",), source=TEAM_SOURCE)
+        self.standard = self.loom.agents_named((ClaudeCode.NAME, OpenCode.NAME))
+        self.claude_work_dir = self.home / ".claude-work"
+        self.opencode_work_dir = self.home / ".config" / "opencode-work"
+        self.work = Loom(
+            self.loom.registry, {ClaudeCode.NAME: self.claude_work_dir, OpenCode.NAME: self.opencode_work_dir}
+        )
+        self.work_agents = self.work.agents_named((ClaudeCode.NAME, OpenCode.NAME))
 
-    def test_a_hook_driven_sync_records_the_project_with_the_agent_that_asked(self) -> None:
+    def make_work_clone(self) -> Path:
+        """A source that differs from the standard setup's in its layer, its global rule and a global manual skill."""
+        clone = make_clone(self.root, "work-rules")
+        (clone / "AGENTS.md").write_text("# Work Instructions\n")
+        (clone / "rules" / "gitlab.md").write_text("# GitLab\n")
+        (clone / "skills" / "support").mkdir()
+        (clone / "skills" / "support" / "SKILL.md").write_text("---\ndisable-model-invocation: true\n---\n")
+        (clone / Manifest.FILE_NAME).write_text('[global]\nrules = ["gitlab"]\nskills = ["support"]\n')
+        return clone
+
+    def wire_both(self) -> None:
+        self.loom._add_target_dir(self.target_dir, self.standard)
+        self.work._add_target_dir(self.work_target_dir, self.work_agents)
+
+    def test_each_setup_writes_into_its_own_dirs(self) -> None:
+        self.wire_both()
+        standard_opencode = self.standard[1].config_dir
+        self.assertIn("# Agent Instructions", (standard_opencode / "AGENTS.md").read_text())
+        self.assertEqual([rule.name for rule in (standard_opencode / "rules").iterdir()], ["git.md"])
+        self.assertFalse((standard_opencode / "commands").exists())
+        self.assertIn("# Work Instructions", (self.opencode_work_dir / "AGENTS.md").read_text())
+        self.assertEqual([rule.name for rule in (self.opencode_work_dir / "rules").iterdir()], ["gitlab.md"])
+        self.assertEqual([command.name for command in (self.opencode_work_dir / "commands").iterdir()], ["support.md"])
+        self.assertIn("# Work Instructions", (self.claude_work_dir / "CLAUDE.md").read_text())
+        self.assertIn("# Agent Instructions", (self.claude_dir / "CLAUDE.md").read_text())
+
+    def test_a_sync_needs_no_dirs_to_find_where_a_target_dir_is_wired_from(self) -> None:
+        self.wire_both()
+        (self.opencode_work_dir / "rules" / "gitlab.md").unlink()
+        self.loom.sync(self.work_target_dir)
+        self.assertTrue((self.opencode_work_dir / "rules" / "gitlab.md").is_file())
+        self.assertEqual([rule.name for rule in self.standard[1].rules_dir.iterdir()], ["git.md"])
+
+    def test_a_session_of_the_other_setup_is_told_which_dir_to_launch_with(self) -> None:
+        self.wire_both()
+        said = self.stdout_of(lambda: self.loom.sync(self.work_target_dir, self.standard[0]))
+        self.assertIn(f"{ClaudeCode.CONFIG_DIR_ENV}=~/.claude-work claude", said)
+        self.assertEqual(
+            self.loom.registry.config_dirs_of(self.work_target_dir), [self.claude_work_dir, self.opencode_work_dir]
+        )
+        self.assertFalse((self.claude_dir / "rules" / "gitlab.md").exists())
+
+    def test_a_session_of_another_dir_in_a_standard_setups_target_dir_is_told_to_drop_the_variable(self) -> None:
+        self.wire_both()
+        said = self.stdout_of(lambda: self.work.sync(self.target_dir, self.work_agents[0]))
+        self.assertIn(f"launch claude without {ClaudeCode.CONFIG_DIR_ENV}", said)
+
+    def test_a_target_dir_wired_from_two_dirs_of_one_agent_is_left_alone_for_it(self) -> None:
+        self.wire_both()
+        self.loom.registry.add_target_dir(self.claude_dir, self.work_target_dir, [TEAM_SOURCE])
+        said = self.stderr_of(lambda: self.loom.sync(self.work_target_dir))
+        self.assertEqual(len(said.splitlines()), 1)
+        self.assertIn("is wired for claude from ~/.claude, ~/.claude-work", said)
+
+    def test_wiring_from_another_dir_moves_the_target_dir(self) -> None:
+        self.work._add_target_dir(self.work_target_dir, self.work_agents)
+        said = self.stdout_of(lambda: self.loom._add_target_dir(self.work_target_dir, self.standard[:1]))
+        self.assertIn("moved claude from ~/.claude-work to ~/.claude", said)
+        self.assertEqual(self.loom.registry.config_dirs_of(self.work_target_dir), [self.claude_dir])
+        self.assertTrue((self.work_target_dir / ".claude" / "rules" / "loom").is_symlink())
+
+    def test_a_config_dir_a_target_dir_leaves_loses_the_global_files_only_it_brought(self) -> None:
+        self.work._add_target_dir(self.work_target_dir, self.work_agents)
+        self.loom._add_target_dir(self.work_target_dir, self.standard[:1])
+        self.assertFalse((self.claude_work_dir / "rules" / "gitlab.md").exists())
+        self.assertFalse((self.claude_work_dir / "CLAUDE.md").exists())
+
+    def test_init_says_how_to_launch_an_agent_for_a_dir_of_its_own(self) -> None:
+        said = self.stdout_of(lambda: self.work.init(self.work_target_dir, self.work_agents))
+        self.assertIn(f"{OpenCode.CONFIG_DIR_ENV}=~/.config/opencode-work opencode --standalone", said)
+        self.assertNotIn(
+            OpenCode.CONFIG_DIR_ENV, self.stdout_of(lambda: self.loom.init(self.target_dir, self.standard))
+        )
+
+    def test_uninstalling_empties_every_dir(self) -> None:
+        self.wire_both()
+        self.loom.uninstall()
+        self.assertFalse(self.opencode_work_dir.exists())
+        self.assertFalse((self.claude_dir / "CLAUDE.md").exists())
+        self.assertFalse(self.loom.registry.path.exists())
+
+
+class RegistryFollowsWiringTests(WiredTargetDirTestCase):
+    """Whatever wires a target dir records it — a hook-driven sync counts as much as a hand-typed init."""
+
+    def test_a_hook_driven_sync_records_the_target_dir_with_the_agent_that_asked(self) -> None:
         # without the agent, every later sync would wire none — a skill added later would never reach Claude
-        self.loom.sync(self.project, "claude")
-        self.assertEqual(self.loom.registry.projects, [self.project])
-        self.assertEqual(self.loom.registry.agents_for(self.project), ["claude"])
+        self.loom.sync(self.target_dir, self.claude)
+        self.assertEqual(self.loom.registry.config_dirs_of(self.target_dir), [self.claude_dir])
 
     def test_an_agent_left_out_of_a_new_choice_is_unwired(self) -> None:
-        self.loom.add(self.project, ("claude", "opencode"))
-        self.assertTrue((self.project / ".claude" / "rules" / "loom").is_symlink())
-        self.loom.add(self.project, ("opencode",))
-        self.assertFalse((self.project / ".claude").exists())
-        self.assertEqual(self.loom.registry.agents_for(self.project), ["opencode"])
+        self.loom._add_target_dir(self.target_dir, (self.claude, self.opencode))
+        self.assertTrue((self.target_dir / ".claude" / "rules" / "loom").is_symlink())
+        self.loom._add_target_dir(self.target_dir, (self.opencode,))
+        self.assertFalse((self.target_dir / ".claude").exists())
+        self.assertEqual([agent.NAME for agent in self.loom.wired_agents(self.target_dir)], [OpenCode.NAME])
 
-    def test_removing_a_project_takes_its_skills_but_not_foreign_ones(self) -> None:
-        (self.project / Declaration.FILE_NAME).write_text(
-            f'source = "{SOURCE}"\nrules = ["python"]\nskills = ["translate"]\n'
-        )
-        theirs = self.project / ".agents" / "skills" / "from-the-cli"
+    def test_removing_a_target_dir_takes_its_skills_but_not_foreign_ones(self) -> None:
+        declare(self.target_dir, ("python",), skills=("translate",))
+        theirs = paths.target_skills_dir(self.target_dir) / "from-the-cli"
         theirs.mkdir(parents=True)
-        self.loom.add(self.project, ("claude",))
-        self.assertTrue((self.project / ".agents" / "skills" / "translate" / "SKILL.md").is_file())
-        self.loom.remove(self.project)
-        self.assertFalse((self.project / ".agents" / "skills" / "translate").exists())
+        self.loom._add_target_dir(self.target_dir, (self.claude,))
+        self.assertTrue((paths.target_skills_dir(self.target_dir) / "translate" / "SKILL.md").is_file())
+        self.loom.remove(self.target_dir)
+        self.assertFalse((paths.target_skills_dir(self.target_dir) / "translate").exists())
         self.assertTrue(theirs.is_dir())
-
-    def test_uninstall_unbridges_an_agent_that_is_not_installed(self) -> None:
-        self.loom.add(self.project, ("opencode",))
-        agents_md = OpenCode().config_dir / "AGENTS.md"
-        self.assertTrue(agents_md.is_file())
-        with patch("shutil.which", return_value=None):
-            self.loom.uninstall()
-        self.assertFalse(agents_md.exists())
+        self.assertEqual(self.loom.registry.target_dirs, [])
 
     def test_a_session_of_another_agent_adds_to_what_was_chosen(self) -> None:
-        self.loom.registry.add_project(self.project, ["opencode"])
-        self.loom.sync(self.project, "claude")
-        self.assertEqual(self.loom.registry.agents_for(self.project), ["claude", "opencode"])
+        self.loom._add_target_dir(self.target_dir, (self.opencode,))
+        self.loom.sync(self.target_dir, self.claude)
+        self.assertEqual(
+            sorted(agent.NAME for agent in self.loom.wired_agents(self.target_dir)), [ClaudeCode.NAME, OpenCode.NAME]
+        )
 
-    def test_a_sync_that_changed_something_asks_for_one_restart(self) -> None:
-        said = self.stdout_of(lambda: self.loom.sync(self.project, "claude"))
-        self.assertEqual(said.count("restart any open session"), 1)
+    def test_a_target_dir_that_dropped_its_declaration_is_forgotten(self) -> None:
+        self.loom.sync(self.target_dir, self.claude)
+        (self.target_dir / Declaration.FILE_NAME).unlink()
+        self.loom.sync(self.target_dir)
+        self.assertEqual(self.loom.registry.target_dirs, [])
 
-    def test_a_sync_that_changed_nothing_asks_for_no_restart(self) -> None:
-        self.loom.sync(self.project, "claude")
-        self.assertNotIn("restart", self.stdout_of(lambda: self.loom.sync(self.project, "claude")))
-
-    def test_init_asks_for_no_restart(self) -> None:
-        # no session is open yet to restart
-        def first_init() -> None:
-            self.loom.init(self.project, ("claude",))
-            self.loom.add(self.project, ("claude",))
-
-        self.assertNotIn("restart", self.stdout_of(first_init))
-
-    def test_a_project_that_dropped_its_declaration_is_forgotten(self) -> None:
-        self.loom.sync(self.project)
-        (self.project / Declaration.FILE_NAME).unlink()
-        self.loom.sync(self.project)
-        self.assertEqual(self.loom.registry.projects, [])
-
-
-class AddedSourcesTests(SandboxTestCase):
-    """A source may build on others: the same [[source]] blocks, meaning 'I build on this' in a source's own file."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.base = make_clone(self.root, "base-rules")
-        self.team = make_clone(self.root, "team-rules")
-        # local checkouts that were never pushed
-        self.enterContext(patch("loomwork.git.origin", return_value=None))
-
-    def builds_on(self, source: Path, base: Path) -> None:
-        (source / Manifest.FILE_NAME).write_text(f'[[source]]\nsource = "{base}"\n')
-
-    def test_adding_a_source_says_where_it_sits(self) -> None:
-        self.assertEqual(self.loom.add_source(str(self.team)), self.team)
-
-    def test_what_a_source_builds_on_comes_first(self) -> None:
-        # broadest first, so the source that declared the dependency wins a shared filename
-        self.builds_on(self.team, self.base)
-        self.loom.add_source(str(self.team))
-        self.assertEqual(self.loom.registry.sources, [self.base, self.team])
-
-    def test_a_cycle_is_added_once(self) -> None:
-        self.builds_on(self.team, self.base)
-        self.builds_on(self.base, self.team)
-        self.loom.add_source(str(self.team))
-        self.assertEqual(sorted(self.loom.registry.sources), sorted([self.base, self.team]))
-
-
-class RefreshTests(SandboxTestCase):
-    """Every source is updated before a sync copies from it."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        for name in ("one", "two"):
-            (self.root / name).mkdir()
-            self.loom.registry.add_source(f"forge.test/{name}/rules", self.root / name, f"forge.test/{name}/rules")
-
-    def test_a_refresh_updates_every_source(self) -> None:
-        with patch("loomwork.git.pull", return_value=True) as pulled:
-            self.loom.refresh()
-        self.assertEqual({call.args[0].name for call in pulled.call_args_list}, {"one", "two"})
-
-    def test_two_sources_in_one_repo_update_it_once(self) -> None:
-        repo = self.root / "big-repo"
-        (repo / ".git").mkdir(parents=True)
-        for name in ("agents", "skills-only"):
-            (repo / name).mkdir()
-            self.loom.registry.add_source(f"forge.test/big/{name}", repo / name, f"forge.test/big/{name}")
-        with patch("loomwork.git.pull", return_value=True) as pulled:
-            self.loom.refresh()
-        self.assertEqual([call.args[0] for call in pulled.call_args_list].count(repo), 1)
+    def test_removing_an_unrecorded_target_dir_still_takes_our_links(self) -> None:
+        self.loom._add_target_dir(self.target_dir, (self.claude,))
+        self.loom.registry.forget()
+        self.loom.remove(self.target_dir)
+        self.assertFalse((self.target_dir / ".claude" / "rules" / "loom").is_symlink())
 
 
 class ChosenAgentsTests(SandboxTestCase):
-    """Which agents a project is wired for: what it was set up for, plus the agent asking."""
+    """Which agents a target dir is wired for: what it was set up for, each from its dir."""
 
     def setUp(self) -> None:
         super().setUp()
-        self.project = self.root / "project"
-
-    def test_choosing_no_agents_wires_none_rather_than_all(self) -> None:
-        # an empty choice is an answer, not a reason to fall back to everything installed
-        self.loom.registry.add_project(self.project, [])
-        self.assertEqual(self.loom.agents_for(self.project), ())
+        self.target_dir = self.root / "target_dir"
+        opencode_dir = OpenCode.standard_config_dir()
+        self.loom.registry.add_config_dir(opencode_dir, OpenCode.NAME)
 
     def test_a_recorded_choice_is_what_gets_wired(self) -> None:
-        self.loom.registry.add_project(self.project, ["opencode"])
-        self.assertEqual([agent.NAME for agent in self.loom.agents_for(self.project)], ["opencode"])
+        self.loom.registry.add_target_dir(OpenCode.standard_config_dir(), self.target_dir, [])
+        self.assertEqual([agent.NAME for agent in self.loom.wired_agents(self.target_dir)], [OpenCode.NAME])
 
-    def test_a_project_nobody_chose_for_gets_the_agent_that_asked(self) -> None:
-        # the session hook names itself, and loom wires that agent only — never everything installed
-        self.assertEqual([agent.NAME for agent in self.loom.agents_for(self.project, "claude")], ["claude"])
-
-    def test_a_project_nobody_chose_for_and_nobody_asked_about_gets_nothing(self) -> None:
-        self.assertEqual(self.loom.agents_for(self.project), ())
+    def test_a_target_dir_nobody_chose_for_gets_nothing(self) -> None:
+        self.assertEqual(self.loom.wired_agents(self.target_dir), ())
 
     def test_the_recorded_choice_is_what_init_offers_ticked(self) -> None:
-        self.loom.registry.add_project(self.project, ["opencode"])
-        self.assertEqual(self.loom.usual_agents(self.project), ("opencode",))
+        self.loom.registry.add_target_dir(OpenCode.standard_config_dir(), self.target_dir, [])
+        self.assertEqual(self.loom.usual_agents(self.target_dir), (OpenCode.NAME,))
 
-    def test_a_new_project_is_offered_what_is_installed(self) -> None:
-        with patch("shutil.which", side_effect=lambda command: command == "claude"):
-            self.assertIn("claude", self.loom.usual_agents(self.project))
-            self.assertNotIn("opencode", self.loom.usual_agents(self.project))
+    def test_a_new_target_dir_is_offered_what_is_installed(self) -> None:
+        with patch.object(Agent, "is_present", autospec=True, side_effect=lambda agent: agent.NAME == ClaudeCode.NAME):
+            self.assertIn(ClaudeCode.NAME, self.loom.usual_agents(self.target_dir))
+            self.assertNotIn(OpenCode.NAME, self.loom.usual_agents(self.target_dir))
 
 
-class DeclaredSourceTests(SandboxTestCase):
-    """A project naming a source this profile lacks is what makes loom fetch it, even beside one it has."""
+class UninstallTests(WiredTargetDirTestCase):
+    def test_uninstall_clears_an_agent_that_is_not_installed(self) -> None:
+        self.loom._add_target_dir(self.target_dir, (self.opencode,))
+        agents_md = self.opencode.config_dir / "AGENTS.md"
+        self.assertTrue(agents_md.is_file())
+        with patch.object(Agent, "is_present", return_value=False):
+            self.loom.uninstall()
+        self.assertFalse(agents_md.exists())
+
+
+class InitTests(SandboxTestCase):
+    """What init sets up from its answers, and what it leaves alone when it cannot go on."""
 
     def setUp(self) -> None:
         super().setUp()
         self.clone = make_clone(self.root, "acme-rules")
         self.loom.registry.add_source(SOURCE, self.clone, SOURCE)
 
-    def test_a_source_already_added_is_never_fetched(self) -> None:
-        project = make_project(self.root)
-        with patch("loomwork.sources.fetch", side_effect=AssertionError("should not clone")):
-            self.loom.add_declared_sources(project)
+    def test_init_writes_the_answered_declaration_and_gitignore_then_wires(self) -> None:
+        target_dir = self.root / "fresh"
+        target_dir.mkdir()
+        declaration = Declaration((DeclaredSource(SOURCE, ("python",)),))
+        self.loom.init(
+            target_dir, self.loom.agents_named((ClaudeCode.NAME,)), declaration=declaration, ignore_generated=True
+        )
+        self.assertEqual(Declaration.read(target_dir), declaration)
+        self.assertIn(".agents/", (target_dir / Gitignore.FILE_NAME).read_text())
+        self.assertTrue((paths.target_rules_dir(target_dir) / "python.md").is_file())
+        self.assertEqual(self.loom.registry.config_dirs_of(target_dir), [self.claude_dir])
 
-    def test_an_unknown_source_is_fetched_even_beside_a_known_one(self) -> None:
-        project = make_project(self.root, source="forge.test/other/rules")
-        fetched = make_clone(self.root, "other-rules")
-        with patch("loomwork.sources.fetch", return_value=fetched):
-            self.loom.add_declared_sources(project)
-        self.assertIn(fetched, self.loom.registry.sources)
+    def test_init_without_a_declaration_sets_up_the_dirs_and_wires_nothing(self) -> None:
+        target_dir = self.root / "undeclared"
+        target_dir.mkdir()
+        # a local checkout that was never pushed, pinned with init --source
+        self.enterContext(patch("loomwork.git.origin", return_value=None))
+        said = self.stderr_of(
+            lambda: self.loom.init(target_dir, self.loom.agents_named((ClaudeCode.NAME,)), source=str(self.clone))
+        )
+        self.assertIn(f"carries no {Declaration.FILE_NAME}", said)
+        self.assertTrue((self.claude_dir / "rules" / "git.md").is_file())
+        self.assertEqual(self.loom.registry.config_dirs_of(target_dir), [])
 
-    def test_a_source_whose_clone_is_gone_is_fetched_again(self) -> None:
-        shutil.rmtree(self.clone)
-        project = make_project(self.root)
-        fetched = make_clone(self.root, "fetched-again")
-        with patch("loomwork.sources.fetch", return_value=fetched):
-            self.loom.add_declared_sources(project)
-        self.assertEqual(self.loom.registry.source_for(SOURCE), fetched)
-
-    def test_a_checkout_of_a_cloned_repo_replaces_the_clone(self) -> None:
-        # one repo, two spellings: the project names the working copy, the profile holds a fetched clone
-        checkout = make_clone(self.root, "rules-checkout")
-        project = make_project(self.root, source=str(checkout))
-        with patch("loomwork.sources.identity", return_value=SOURCE):
-            self.loom.add_declared_sources(project)
-        self.assertEqual(self.loom.registry.source_for(SOURCE), checkout)
-
-    def test_a_relative_path_counts_from_the_project(self) -> None:
-        sibling = make_clone(self.root, "sibling-rules")
-        project = make_project(self.root, source="../sibling-rules")
-        elsewhere = self.root / "elsewhere"
-        elsewhere.mkdir()
-        with patch("os.getcwd", return_value=str(elsewhere)), patch("loomwork.git.origin", return_value=None):
-            self.loom.add_declared_sources(project)
-        self.assertIn(sibling, self.loom.registry.sources)
+    def test_without_a_source_init_says_what_to_run(self) -> None:
+        bare = self.root / "bare"
+        bare.mkdir()
+        with self.assertRaises(LoomError):
+            self.loom.init(bare, self.loom.agents_named((ClaudeCode.NAME,)))
 
     def test_init_places_the_global_skills_in_the_same_run(self) -> None:
         (self.clone / Manifest.FILE_NAME).write_text('[global]\nskills = ["translate"]\n')
-        project = make_project(self.root)
-        self.loom.init(project, ("claude",))
-        self.assertTrue((self.loom.config_dir / "skills" / "translate" / "SKILL.md").is_file())
+        target_dir = make_target_dir(self.root)
+        self.loom.init(target_dir, self.loom.agents_named((ClaudeCode.NAME,)))
+        self.assertTrue((self.claude_dir / "skills" / "translate" / "SKILL.md").is_file())
 
-    def test_init_takes_the_source_from_what_the_project_declares(self) -> None:
+    def test_init_takes_the_source_from_what_the_target_dir_declares(self) -> None:
         # the first teammate on a fresh machine has a committed declaration and should be asked nothing
-        project = make_project(self.root, source="forge.test/other/rules")
+        target_dir = make_target_dir(self.root, source="forge.test/other/rules")
         fetched = make_clone(self.root, "other-rules")
-        with patch("loomwork.sources.fetch", return_value=fetched):
-            self.loom.init(project, ())
-        self.assertIn(fetched, self.loom.registry.sources)
+        with patch("loomwork.sources.source.Source.fetch", return_value=fetched):
+            self.loom.init(target_dir, ())
+        self.assertEqual(self.loom.registry.checkout_of("forge.test/other/rules"), fetched)
+
+    def test_a_source_that_cannot_be_fetched_leaves_the_target_dir_untouched(self) -> None:
+        target_dir = self.root / "fresh"
+        target_dir.mkdir()
+        declaration = Declaration((DeclaredSource(SOURCE, ("python",)),))
+        with (
+            patch("loomwork.sources.source.Source.fetch", side_effect=LoomError("clone_failed", "unreachable")),
+            self.assertRaises(LoomError),
+        ):
+            self.loom.init(target_dir, self.loom.agents_named((ClaudeCode.NAME,)), "forge.test/acme/gone", declaration)
+        self.assertFalse((target_dir / Declaration.FILE_NAME).exists())
+
+    def test_init_asks_for_no_restart(self) -> None:
+        # no session is open yet to restart
+        target_dir = make_target_dir(self.root)
+        said = self.stdout_of(lambda: self.loom.init(target_dir, self.loom.agents_named((ClaudeCode.NAME,))))
+        self.assertNotIn("restart", said)
+
+    def test_the_default_source_is_the_one_most_target_dirs_declare(self) -> None:
+        self.loom.registry.add_config_dir(self.claude_dir, ClaudeCode.NAME)
+        for name in ("one", "two"):
+            target_dir = self.root / name
+            target_dir.mkdir()
+            Declaration((DeclaredSource(SOURCE, ("python",)),)).write(target_dir)
+            self.loom.registry.add_target_dir(self.claude_dir, target_dir, [SOURCE])
+        odd = self.root / "odd"
+        odd.mkdir()
+        Declaration((DeclaredSource("forge.test/other/rules", ()),)).write(odd)
+        self.loom.registry.add_target_dir(self.claude_dir, odd, [])
+
+        self.assertEqual(self.loom.most_declared_source(), SOURCE)
 
 
 class ReportingTests(SandboxTestCase):
@@ -254,87 +300,16 @@ class ReportingTests(SandboxTestCase):
         super().setUp()
         self.clone = make_clone(self.root)
         self.loom.registry.add_source(SOURCE, self.clone, SOURCE)
+        self.loom.registry.add_config_dir(self.claude_dir, ClaudeCode.NAME)
+        self.loom.registry.pin_source(self.claude_dir, SOURCE)
 
-    def test_a_cloned_source_that_is_gone_says_how_to_fetch_it_again(self) -> None:
-        shutil.rmtree(self.clone)
-        said = self.stderr_of(self.loom.refresh)
-        self.assertIn(f"source {SOURCE} is gone", said)
-        self.assertIn(f"init --source {SOURCE}", said)
-        self.assertNotIn("could not update", said)
+    def test_status_names_each_dir_and_what_every_target_dir_gets_anyway(self) -> None:
+        # no target dir's declaration mentions them, so status is the only place they are visible
+        said = self.stdout_of(self.loom.status)
+        self.assertIn("claude ~/.claude", said)
+        self.assertIn("every target dir gets rules: git", said)
 
-    def test_a_checkout_that_is_gone_asks_where_it_lives_now(self) -> None:
-        checkout = make_clone(self.root, "my-rules")
-        self.loom.registry.add_source(str(checkout), checkout, str(checkout))
-        shutil.rmtree(checkout)
-        with patch("loomwork.git.pull", return_value=True):
-            said = self.stderr_of(self.loom.refresh)
-        self.assertIn(f"source {checkout} is gone — point", said)
-
-    def test_status_names_what_every_project_gets_anyway(self) -> None:
-        # no project's declaration mentions them, so status is the only place they are visible
-        self.assertIn("every project gets rules: git", self.stdout_of(self.loom.status))
-
-    def test_syncing_an_undeclared_project_says_so(self) -> None:
+    def test_syncing_an_undeclared_target_dir_says_so(self) -> None:
         bare = self.root / "bare"
         bare.mkdir()
         self.assertIn("nothing to sync", self.stderr_of(lambda: self.loom.sync(bare)))
-
-
-class QuestionnaireTests(SandboxTestCase):
-    """What init asks, what it stops asking once the answer is recorded, and what it says when an answer is refused."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.loom.registry.add_source(SOURCE, make_clone(self.root), SOURCE)
-        self.project = self.root / "project"
-
-    def test_a_project_the_default_profile_knows_is_not_asked_where_its_config_sits(self) -> None:
-        self.loom.registry.add_project(self.project, [])
-        with (
-            patch.object(ClaudeCode, "DEFAULT_CONFIG_DIR", self.loom.config_dir),
-            patch("sys.stdin.isatty", return_value=True),
-        ):
-            self.assertEqual(wanted_config_dir(None, self.project), self.loom.config_dir)
-
-    def test_the_flag_is_taken_as_given(self) -> None:
-        work = self.root / "home" / ".claude-work"
-        self.assertEqual(wanted_config_dir(work, self.project), work)
-
-    def test_a_source_says_what_it_wants(self) -> None:
-        self.assertEqual(valid_source(""), "a checkout path, or <host>/<owner>/<repo>")
-        self.assertIn("is no <host>/<owner>/<repo>", valid_source("not a repo"))
-        self.assertTrue(valid_source("forge.test/acme/rules"))
-
-    def test_a_config_dir_says_what_it_wants(self) -> None:
-        self.assertIn("a directory path", valid_directory(""))
-        self.assertIn("absolute path", valid_directory("relative/dir"))
-        self.assertTrue(valid_directory("~/.claude-work"))
-
-    def test_gitignore_covers_every_agents_folders(self) -> None:
-        self.assertEqual(self.loom.generated, (".agents/", ".claude/", ".opencode/"))
-
-    def test_a_file_inside_a_folder_does_not_cover_the_folder(self) -> None:
-        self.project.mkdir()
-        (self.project / ".gitignore").write_text(".claude/settings.local.json\n/.agents\n")
-        self.assertEqual(self.loom.unignored(self.project), [".claude/", ".opencode/"])
-
-    def test_the_default_source_is_the_one_most_projects_declare(self) -> None:
-        for name in ("one", "two"):
-            project = self.root / name
-            project.mkdir()
-            Declaration((DeclaredSource(SOURCE, ("python",)),)).write(project)
-            self.loom.registry.add_project(project, [])
-        odd = self.root / "odd"
-        odd.mkdir()
-        Declaration((DeclaredSource("forge.test/other/rules", ()),)).write(odd)
-        self.loom.registry.add_project(odd, [])
-
-        self.assertEqual(self.loom.most_declared_source(), SOURCE)
-
-
-class DeclarationTests(SandboxTestCase):
-    def test_a_broken_declaration_fails_in_one_line(self) -> None:
-        project = make_project(self.root)
-        (project / Declaration.FILE_NAME).write_text("source = \n")
-        said = self.stderr_of(lambda: self.assertRaises(SystemExit, Declaration.read, project))
-        self.assertEqual(len(said.splitlines()), 1)

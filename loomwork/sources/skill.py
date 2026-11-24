@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
-from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -18,20 +20,16 @@ class Skill:
     folder: Path
 
     @property
-    def name(self) -> str:
-        return self.folder.name
+    def is_manual(self) -> bool:
+        """True when the frontmatter sets `disable-model-invocation`: only the user may start the skill."""
+        return self._frontmatter.get("disable-model-invocation") is True
 
     @property
     def description(self) -> str:
-        return str(self.frontmatter.get("description") or "").strip()
-
-    @property
-    def is_manual(self) -> bool:
-        """True when the frontmatter sets `disable-model-invocation`: only the user may start the skill."""
-        return self.frontmatter.get("disable-model-invocation") is True
+        return str(self._frontmatter.get("description") or "").strip()
 
     @cached_property
-    def frontmatter(self) -> dict:
+    def _frontmatter(self) -> dict:
         """SKILL.md's frontmatter as a dict — empty when it is missing or invalid."""
         try:
             opening, fenced, block = (self.folder / self.FILE_NAME).read_text().partition(self.FRONTMATTER_FENCE)
@@ -46,3 +44,7 @@ class Skill:
         if not isinstance(read, dict):
             return {}
         return read
+
+    @property
+    def name(self) -> str:
+        return self.folder.name
