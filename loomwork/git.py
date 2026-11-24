@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
 from subprocess import CompletedProcess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # a session's first answer waits on the hook that updates, so a slow network has to lose rather than hold it up
 UPDATE_TIMEOUT_SECONDS = 8
@@ -11,8 +14,10 @@ CLONE_TIMEOUT_SECONDS = 120
 
 
 def run(*arguments: str, inside: Path | None = None, timeout: float | None = None) -> CompletedProcess[str] | None:
-    """One git call, or None when it failed — the user's own git, so their ssh agent and credential helpers apply."""
-    located = ["-C", str(inside)] if inside else []
+    """One git call, or None when it failed."""
+    located: list[str] = []
+    if inside:
+        located = ["-C", str(inside)]
     # nobody is there to type a password or accept a host key, so git must fail instead of waiting for one
     unattended = {
         "GIT_TERMINAL_PROMPT": "0",
@@ -23,14 +28,17 @@ def run(*arguments: str, inside: Path | None = None, timeout: float | None = Non
             ["git", *located, *arguments],
             capture_output=True,
             text=True,
+            # macOS ships no timeout(1), so this bound is the only one the hook gets
             timeout=timeout,
             check=False,
+            # the user's own environment, so their ssh agent and credential helpers apply
             env={**os.environ, **unattended},
         )
     except subprocess.TimeoutExpired:
-        # macOS ships no timeout(1), so this bound is the only one the hook gets
         return None
-    return ran if ran.returncode == 0 else None
+    if ran.returncode != 0:
+        return None
+    return ran
 
 
 def clone(url: str, into: Path) -> bool:

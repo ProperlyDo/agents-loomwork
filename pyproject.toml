@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-loom = "loomwork.cli:cli"
+loom = "loomwork.cli.commands:cli"
 
 [project.urls]
 Repository = "https://github.com/ProperlyDo/agents-loomwork"

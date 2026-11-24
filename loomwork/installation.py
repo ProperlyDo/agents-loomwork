@@ -13,25 +13,14 @@ from loomwork.output import warn
 
 if TYPE_CHECKING:
     from loomwork.registry import Registry
-    from loomwork.sources import Catalog
-
-
-def _is_identical_copy(source: Path, destination: Path) -> bool:
-    """Whether destination holds exactly the files of source, with the same contents."""
-    if not destination.is_dir():
-        return False
-    carried = {file.relative_to(source) for file in source.rglob("*") if file.is_file()}
-    placed = {file.relative_to(destination) for file in destination.rglob("*") if file.is_file()}
-    if carried != placed:
-        return False
-    return all(filecmp.cmp(source / name, destination / name) for name in carried)
+    from loomwork.sources.catalog import Catalog
 
 
 @dataclass(frozen=True)
 class Installation:
     """The file work loom does for every agent: copies, links, and clearing what it owns."""
 
-    # what the sources added to this profile define
+    # what the sources this work draws on define
     catalog: Catalog
     # what we placed, since a directory is shared with whatever else installs there
     registry: Registry
@@ -86,9 +75,11 @@ class Installation:
         if self._unowned_exists(link_path):
             return False
         # read before the unlink below erases it
-        was = str(link_path.readlink()) if link_path.is_symlink() else None
+        was = None
+        if link_path.is_symlink():
+            was = str(link_path.readlink())
         link_path.unlink(missing_ok=True)
-        # a concurrent sync may win the unlink-to-create window, and its link is identical
+        # a concurrent sync may win the unlink-to-create window with the same link
         with suppress(FileExistsError):
             link_path.symlink_to(target)
         return was != str(target)
@@ -100,7 +91,7 @@ class Installation:
             return False
         cleared = False
         for entry in list(directory.iterdir()):
-            if not self.owned(entry) or entry.name in keep:
+            if not self.owns(entry) or entry.name in keep:
                 continue
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)
@@ -112,7 +103,7 @@ class Installation:
         self.registry.record_owned_in(directory, [name for name in recorded if (directory / name).exists()])
         return cleared
 
-    def owned(self, path: Path) -> bool:
+    def owns(self, path: Path) -> bool:
         """Ours when it is a link aiming where we lay them, recorded as placed by us, or a file with our marker."""
         if path.is_symlink():
             return self._is_owned_link(path)
@@ -120,17 +111,9 @@ class Installation:
             return True
         return path.is_file() and self._is_owned_copy(path)
 
-    def _unowned_exists(self, path: Path) -> bool:
-        """Whether something not owned exists at path — warned about, since it is then left alone."""
-        taken = path.exists() or path.is_symlink()
-        if taken and not self.owned(path):
-            warn(f"{path} exists and is not ours — skipped")
-            return True
-        return False
-
     def _copy_folder(self, original: Path, destination: Path) -> bool:
         """Copy a skill folder over whatever of ours was there. True when it changed."""
-        if _is_identical_copy(original, destination):
+        if self._is_identical_copy(original, destination):
             return False
         shutil.rmtree(destination, ignore_errors=True)
         shutil.copytree(original, destination)
@@ -149,6 +132,25 @@ class Installation:
         destination.write_bytes(rule)
         return was != rule
 
+    def _unowned_exists(self, path: Path) -> bool:
+        """Whether something not owned exists at path — warned about, since it is then left alone."""
+        taken = path.exists() or path.is_symlink()
+        if taken and not self.owns(path):
+            warn(f"{path} exists and is not ours — skipped")
+            return True
+        return False
+
+    @staticmethod
+    def _is_identical_copy(source: Path, destination: Path) -> bool:
+        """Whether destination holds exactly the files of source, with the same contents."""
+        if not destination.is_dir():
+            return False
+        carried = {entry.relative_to(source) for entry in source.rglob("*") if entry.is_file()}
+        placed = {entry.relative_to(destination) for entry in destination.rglob("*") if entry.is_file()}
+        if carried != placed:
+            return False
+        return all(filecmp.cmp(source / name, destination / name) for name in carried)
+
     def _unmarked(self, original: Path) -> str:
         """A rule's text without our marker, so a copy taken from a copy never carries two."""
         return original.read_text().rstrip().removesuffix(self.COPY_MARKER).rstrip()
@@ -157,10 +159,11 @@ class Installation:
         """Owned links aim into the .agents/ of a directory that holds the link, or at the AGENTS.md beside it."""
         aimed = Path(os.path.normpath(link.parent / link.readlink()))
         if aimed.is_relative_to(Path.home() / paths.AGENTS_DIR_NAME):
-            # home holds every project, but its own .agents/ is no project's
+            # home holds every target dir, but its own .agents/ is no target dir's
             return False
         return any(
-            aimed.is_relative_to(root / paths.AGENTS_DIR_NAME) or aimed == root / "AGENTS.md" for root in link.parents
+            aimed.is_relative_to(root / paths.AGENTS_DIR_NAME) or aimed == root / paths.AGENTS_MD_NAME
+            for root in link.parents
         )
 
     def _is_owned_copy(self, path: Path) -> bool:
