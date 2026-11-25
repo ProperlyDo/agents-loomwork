@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from loomwork.agents import Agent, ClaudeCode
+from loomwork.agents import Agent, ClaudeCode, OpenCode
 from loomwork.cli.interview import InitInterview
 from loomwork.errors import LoomError
+from loomwork.loom import Loom
 from loomwork.targets.declaration import Declaration
 from tests.fixtures import SOURCE, SandboxTestCase, declare, leaving_a_mark, make_clone, times_marked
 
@@ -121,3 +122,17 @@ class InitInterviewTests(SandboxTestCase):
         self.target_dir.mkdir()
         (self.target_dir / "rules-here").mkdir()
         self.assertTrue(self.interview._source_check("./rules-here"))
+
+    def test_the_agent_picker_shows_each_agents_config_dir(self) -> None:
+        interview = InitInterview(
+            Loom(self.loom.registry, {ClaudeCode.NAME: self.home / ".claude-rh"}), self.target_dir, None, None
+        )
+        with patch.object(Agent, "is_present", return_value=False):
+            labels = [choice.label(name_width=len(OpenCode.NAME)) for choice in interview._agent_choices(())]
+        self.assertEqual(
+            labels,
+            [
+                f"{ClaudeCode.NAME}    ~/.claude-rh  (not installed here)",
+                f"{OpenCode.NAME}  ~/.config/opencode  (not installed here)",
+            ],
+        )

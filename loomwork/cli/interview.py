@@ -55,11 +55,8 @@ class InitInterview:
         usual = self.loom.usual_agents(self.target_dir)
         if not prompts.can_ask():
             return self._agents_without_asking(usual)
-        choices = [
-            prompts.Choice(agent.NAME, note=self._presence_note(agent), ticked=agent.NAME in usual)
-            for agent in self.loom.agents
-        ]
-        return self.loom.agents_named(prompts.pick("Wire this target dir for", choices, required=True))
+        picked = prompts.pick("Wire this target dir for", self._agent_choices(usual), required=True)
+        return self.loom.agents_named(picked)
 
     def _confirm_moves(self, agents: tuple[Agent, ...]) -> None:
         """Refuse unless the target dir may leave the other dirs it is wired from for these agents."""
@@ -113,6 +110,18 @@ class InitInterview:
         if not usual:
             raise LoomError("no_agents", f"no agent to wire — run '{COMMAND_NAME} init --agents claude,opencode'")
         return self.loom.agents_named(usual)
+
+    def _agent_choices(self, usual: tuple[str, ...]) -> list[prompts.Choice]:
+        """Every supported agent, with the config dir it would be wired from."""
+        return [
+            prompts.Choice(
+                agent.NAME,
+                detail=paths.shown(agent.config_dir),
+                note=self._presence_note(agent),
+                ticked=agent.NAME in usual,
+            )
+            for agent in self.loom.agents
+        ]
 
     def _ask_source(self, default: str = "") -> str:
         return prompts.ask(

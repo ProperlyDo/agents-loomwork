@@ -67,7 +67,7 @@ cd <target_dir> && loom init      # declares, wires, registers the hook
 
 To run the latest `main` instead of a release: `uv tool install git+https://github.com/ProperlyDo/agents-loomwork`.
 
-`init` is the only command a new machine needs. It asks which agents to wire, and — when the target dir carries no `.agents.toml` yet — which source it uses, what it takes from it, and whether to add loom's folders to `.gitignore`. A flag, a committed declaration or what loom already recorded skips the matching question, and nothing is written into the target dir or a config dir until every answer is in.
+`init` is the only command a new machine needs. It asks which agents to wire, showing the config dir each would be wired from. When the target dir carries no `.agents.toml` yet, it also asks which source it uses, what it takes from it, and whether to add loom's folders to `.gitignore`. A flag, a committed declaration or what loom already recorded skips the matching question, and nothing is written into the target dir or a config dir until every answer is in.
 
 The hook calls loom by the full path `init` was started from, so a checkout run with `uv run` works as well as an install. Rerun `init` after moving either. Avoid `uvx` for `init`: its path is a cache entry that can be cleared.
 

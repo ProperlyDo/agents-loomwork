@@ -21,17 +21,22 @@ class Choice:
     """One option of a pick."""
 
     name: str
-    # shown in brackets after the name
+    # shown between the name and the note
+    detail: str = ""
+    # shown in brackets at the end of the line
     note: str = ""
     ticked: bool = False
     # why the option is shown but cannot be picked; empty when it can
     locked_because: str = ""
 
-    @property
-    def label(self) -> str:
-        if not self.note:
-            return self.name
-        return f"{self.name}  ({self.note})"
+    def label(self, name_width: int = 0) -> str:
+        """The line shown for the option, its name padded to name_width so the details form a column."""
+        parts = [self.name.ljust(name_width)]
+        if self.detail:
+            parts.append(self.detail)
+        if self.note:
+            parts.append(f"({self.note})")
+        return "  ".join(parts).rstrip()
 
 
 def ask(question: str, default: str = "", check: Callable[[str], bool | str] | None = None) -> str:
@@ -56,9 +61,10 @@ def pick(question: str, choices: list[Choice], *, required: bool = False) -> tup
     """The names of the choices ticked with <space>."""
     if not choices:
         return ()
+    name_width = max(len(choice.name) for choice in choices)
     options = [
         questionary.Choice(
-            choice.label, value=choice.name, checked=choice.ticked, disabled=choice.locked_because or None
+            choice.label(name_width), value=choice.name, checked=choice.ticked, disabled=choice.locked_because or None
         )
         for choice in choices
     ]
